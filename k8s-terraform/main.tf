@@ -1,0 +1,417 @@
+/*
+ * Script Name  : main.tf
+ * Project Name : cSecBridge
+ * Description  : Orchestrates the deployment of the self-managed Kubernetes 
+ *                cluster infrastructure. Integrates networking, security, 
+ *                compute, and storage resources.
+ * Scope        : Root
+ */
+
+locals {
+  resource_prefix = "${var.main_project_prefix}-${var.main_cluster_name}"
+}
+
+/*
+* NETWORK RESOURCES
+* -----------------
+* Provisions the Virtual Private Cloud (VPC), subnets, and networking gateways.
+* Establishes the foundational network topology with public and private 
+* isolation zones required for the Kubernetes cluster.
+*/
+module "network" {
+  source                   = "./modules/network"
+  vpc_resource_prefix      = local.resource_prefix
+  vpc_cidr                 = var.network_vpc_cidr
+  vpc_public_subnets_cidr  = var.network_public_subnets_cidr
+  vpc_private_subnets_cidr = var.network_private_subnets_cidr
+  vpc_availability_zones   = var.network_availability_zones
+}
+
+/*
+* SECURITY GROUP FOR CONTROL PLANE
+* --------------------------------
+* Defines the network security boundary for Control Plane instances.
+* Acts as the primary firewall, controlling ingress and egress traffic for the
+* Kubernetes API server and internal cluster communication.
+*/
+module "control_plane_security" {
+  source         = "./modules/security"
+  sg_name        = "${local.resource_prefix}-control-plane-sg"
+  sg_description = "Security group for the control plane"
+  sg_vpc_id      = module.network.vpc_id
+  sg_tags        = {}
+}
+
+/*
+* SECURITY GROUP FOR WORKER NODES
+* -------------------------------
+* Defines the network security boundary for Worker Node instances.
+* Manages traffic flow for application workloads, Kubelet communication, and
+* inter-node networking.
+*/
+module "worker_node_security" {
+  source         = "./modules/security"
+  sg_name        = "${local.resource_prefix}-worker-nodes-sg"
+  sg_description = "Security group for the worker nodes"
+  sg_vpc_id      = module.network.vpc_id
+  sg_tags        = {}
+}
+
+/*
+* SECURITY GROUP RULES FOR CONTROL PLANE
+* --------------------------------------
+* Rule 1: Ingress to control plane allowing SSH traffic.
+* Rule 2: Egress from control plane to worker node on Kubelet port (10250).
+* Rule 3: Egress from control plane to worker node on SSH port.
+*/
+resource "aws_vpc_security_group_ingress_rule" "cp_ssh_ingress" {
+  security_group_id = module.control_plane_security.sg_id
+  cidr_ipv4         = "0.0.0.0/0"
+  from_port         = 22
+  ip_protocol       = "tcp"
+  to_port           = 22
+}
+
+resource "aws_vpc_security_group_ingress_rule" "cp_api_ingress" {
+  security_group_id = module.control_plane_security.sg_id
+  cidr_ipv4         = "0.0.0.0/0"
+  from_port         = 6443
+  ip_protocol       = "tcp"
+  to_port           = 6443
+}
+
+resource "aws_vpc_security_group_egress_rule" "cp_to_worker_k8s" {
+  security_group_id            = module.control_plane_security.sg_id
+  referenced_security_group_id = module.worker_node_security.sg_id
+  from_port                    = 10250
+  ip_protocol                  = "tcp"
+  to_port                      = 10250
+}
+
+resource "aws_vpc_security_group_egress_rule" "cp_to_worker_ssh" {
+  security_group_id            = module.control_plane_security.sg_id
+  referenced_security_group_id = module.worker_node_security.sg_id
+  from_port                    = 22
+  ip_protocol                  = "tcp"
+  to_port                      = 22
+}
+
+/*
+* SECURITY GROUP RULES FOR WORKER NODES
+* -------------------------------------
+* Rule 1: Ingress to worker node from control plane (SSH & Kubelet)
+* NOTE:
+* All outbound traffic from control plane is allowed (No private connections).
+* Additional egress rules to be configured to allow private connections based 
+* on security revamp.
+*/
+resource "aws_vpc_security_group_ingress_rule" "worker_from_cp_all" {
+  security_group_id            = module.worker_node_security.sg_id
+  referenced_security_group_id = module.control_plane_security.sg_id
+  ip_protocol                  = "-1"
+  description                  = "Allow all traffic from Control Plane (includes SSH and Kubelet)"
+}
+
+/*
+* SECURITY GROUP RULES FOR INTERNET ACCESS
+* ----------------------------------------
+* Essential for package installation, image pulling, and connectivity checks (ping).
+* Rule 1: Allow egress from control plane to internet.
+* Rule 2: Allow egress from worker nodes to internet.
+*/
+resource "aws_vpc_security_group_egress_rule" "cp_internet_access" {
+  security_group_id = module.control_plane_security.sg_id
+  cidr_ipv4         = "0.0.0.0/0"
+  ip_protocol       = "-1"
+}
+
+resource "aws_vpc_security_group_egress_rule" "worker_internet_access" {
+  security_group_id = module.worker_node_security.sg_id
+  cidr_ipv4         = "0.0.0.0/0"
+  ip_protocol       = "-1"
+}
+
+/*
+* IAM ROLE AND INSTANCE PROFILE FOR CONTROL PLANE INSTANCES
+* ---------------------------------------------------------
+* Configures the IAM identity and permissions for Control Plane instances.
+* Attaches necessary policies for SSM, S3, and EC2 interactions required for
+* cluster bootstrapping and management.
+*/
+module "iam_role_control_plane" {
+  source                      = "./modules/iam/roles"
+  iam_role_name               = "${local.resource_prefix}-control-plane-role"
+  iam_role_description        = "IAM role for the control plane instances"
+  iam_role_assume_role_policy = var.compute_control_plane_iam_role_policy
+}
+
+resource "aws_iam_instance_profile" "iam_instance_profile_cp" {
+  name = "${local.resource_prefix}-control-plane-profile"
+  role = module.iam_role_control_plane.iam_role_name
+}
+
+/*
+* IAM ROLE FOR WORKER NODE INSTANCES
+* ----------------------------------
+* Configures the IAM identity and permissions for Worker Node instances.
+* Grants least-privilege access required for joining the cluster, pulling images,
+* and communicating with the Control Plane.
+*/
+module "iam_role_worker_nodes" {
+  source                      = "./modules/iam/roles"
+  iam_role_name               = "${local.resource_prefix}-worker-nodes-role"
+  iam_role_description        = "IAM role for the worker nodes instances"
+  iam_role_assume_role_policy = var.compute_worker_nodes_iam_role_policy
+}
+
+resource "aws_iam_instance_profile" "iam_instance_profile_wn" {
+  name = "${local.resource_prefix}-worker-nodes-profile"
+  role = module.iam_role_worker_nodes.iam_role_name
+}
+
+/*
+* SSM PARAMETER FOR CLUSTER JOIN COMMAND
+* --------------------------------------
+* Creates a SecureString parameter in AWS Systems Manager Parameter Store.
+* Serves as a secure "dead drop" for the Control Plane to store the
+* 'kubeadm join' command after cluster initialization.
+*
+* Worker nodes read this parameter during boot to automatically join the cluster.
+* The 'value' attribute is ignored by Terraform to ensure the actual token
+* generated by the Control Plane is not overwritten by the placeholder.
+*/
+module "ssm_parameter_cluster_join_command" {
+  source = "./modules/systems-manager"
+
+  # SSM Parameter Config
+  ssm_parameter_name        = "/${local.resource_prefix}/k8s/join-command"
+  ssm_parameter_description = "Stores the kubeadm join command required for worker nodes to join the cluster."
+  ssm_parameter_type        = "SecureString"
+  ssm_parameter_value       = "NOT_READY"
+}
+
+/*
+* S3 BUCKET FOR KUBECONFIG
+* ------------------------
+* Stores the admin kubeconfig file securely using server-side encryption.
+* Replaces SSM Parameter Store for this artifact due to size limitations.
+*/
+module "s3_kubeconfig_bucket" {
+  source = "./modules/s3"
+
+  s3_bucket_name = "${local.resource_prefix}-k8s-config"
+  s3_tags        = {}
+}
+
+/*
+* IAM POLICY FOR CONTROL PLANE SSM ACCESS
+* ---------------------------------------
+* Grants the Control Plane permission to write the cluster join command to SSM Parameter Store.
+* Enables automated distribution of the join token to worker nodes.
+*/
+module "iam_policy_control_plane_ssm_write" {
+  source = "./modules/iam/policies"
+
+  # Policy Config
+  iam_policy_name        = "${local.resource_prefix}-cp-ssm-write-policy"
+  iam_policy_description = "Policy to grant write access for the Control Plane to the SSM Parameter Store"
+  iam_policy_document = {
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = ["ssm:PutParameter"]
+        Resource = [
+          module.ssm_parameter_cluster_join_command.ssm_parameter_arn
+        ]
+      }
+    ]
+  }
+
+  # Policy Attachment Config
+  iam_policy_attachment_role_name = module.iam_role_control_plane.iam_role_name
+}
+
+/*
+* IAM POLICY FOR CONTROL PLANE S3 ACCESS
+* --------------------------------------
+* Grants the Control Plane permission to write the kubeconfig file to the secure S3 bucket.
+* Ensures secure offloading of administrative credentials for external access.
+*/
+module "iam_policy_control_plane_s3_write" {
+  source = "./modules/iam/policies"
+
+  # Policy Config
+  iam_policy_name        = "${local.resource_prefix}-cp-s3-write-policy"
+  iam_policy_description = "Policy to grant write access for the Control Plane to the Kubeconfig S3 Bucket"
+  iam_policy_document = {
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = ["s3:PutObject"]
+        Resource = [
+          "${module.s3_kubeconfig_bucket.s3_bucket_arn}/*"
+        ]
+      }
+    ]
+  }
+
+  # Policy Attachment Config
+  iam_policy_attachment_role_name = module.iam_role_control_plane.iam_role_name
+}
+
+/*
+* IAM POLICY FOR WORKER NODE SSM ACCESS
+* -------------------------------------
+* Grants Worker Nodes permission to read the cluster join command from SSM Parameter Store.
+* Required for automated cluster joining during scaling events.
+*/
+module "iam_policy_worker_node_ssm_read" {
+  source = "./modules/iam/policies"
+
+  # Policy Config
+  iam_policy_name        = "${local.resource_prefix}-wn-ssm-read-policy"
+  iam_policy_description = "Policy to grant read access for the Worker Nodes to the SSM Parameter Store"
+  iam_policy_document = {
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = ["ssm:GetParameter"]
+        Resource = module.ssm_parameter_cluster_join_command.ssm_parameter_arn
+      }
+    ]
+  }
+
+  # Policy Attachment Config
+  iam_policy_attachment_role_name = module.iam_role_worker_nodes.iam_role_name
+}
+
+/*
+* CONTROL PLANE LOAD BALANCER (NLB)
+* ---------------------------------
+* Provides a stable Network Load Balancer endpoint for the Kubernetes API Server.
+* Ensures consistent connectivity for kubectl and worker nodes, abstracting the
+* underlying EC2 instances managed by the Auto Scaling Group.
+*/
+module "control_plane_lb" {
+  source = "./modules/load-balancer/nlb"
+
+  # NLB Config
+  nlb_name               = "${local.resource_prefix}-control-plane-nlb"
+  nlb_internal_enabled   = false
+  nlb_cross_zone_enabled = true
+  nlb_subnet_ids         = module.network.public_subnet_ids
+
+  # NLB Target Group Config
+  nlb_target_group_name = "${local.resource_prefix}-control-plane-tg"
+  nlb_target_port       = 6443
+  nlb_target_protocol   = "TCP"
+  nlb_target_vpc_id     = module.network.vpc_id
+
+  # NLB Target Group Health Check Config
+  nlb_target_health_check_protocol = "TCP"
+  nlb_target_health_check_port     = 6443
+  nlb_target_health_check_interval = 30
+
+  # NLB Listener Config
+  nlb_listener_port     = 6443
+  nlb_listener_protocol = "TCP"
+}
+
+/*
+* KUBERNETES CONTROL PLANE RESOURCES
+* ----------------------------------
+* Provisions the Control Plane infrastructure using Auto Scaling Groups and Launch Templates.
+* Bootstraps the Kubernetes cluster, installs networking components, and publishes
+* connection info to SSM/S3.
+*/
+module "k8s_control_plane" {
+  source = "./modules/compute"
+
+  # Basic config
+  ec2_name_prefix   = "${local.resource_prefix}-control-plane"
+  ec2_ami_id        = var.compute_control_plane_ami_id
+  ec2_instance_type = var.compute_control_plane_instance_type
+  ec2_key_name      = var.compute_control_plane_key_name
+
+  # Network config
+  ec2_subnet_ids                  = module.network.public_subnet_ids
+  ec2_security_group_ids          = [module.control_plane_security.sg_id]
+  ec2_associate_public_ip_address = true
+
+  # IAM config
+  ec2_iam_instance_profile_name = aws_iam_instance_profile.iam_instance_profile_cp.name
+
+  # User data to initialize the cluster
+  ec2_user_data = templatefile("k8s_cp.sh", {
+    lb_dns_name                         = module.control_plane_lb.nlb_dns_name,
+    ssm_cluster_join_cmd_parameter_name = module.ssm_parameter_cluster_join_command.ssm_parameter_name,
+    s3_bucket_name                      = module.s3_kubeconfig_bucket.s3_bucket_id,
+    aws_region                          = var.main_aws_region
+  })
+
+  # Root volume config
+  ec2_root_volume_size = 30
+  ec2_root_volume_type = "gp3"
+
+  # Auto scaling config
+  ec2_asg_desired_capacity = 1
+  ec2_asg_max_size         = 1
+  ec2_asg_min_size         = 1
+
+  # Attach ASG to the NLB Target Group
+  ec2_target_group_arns = [module.control_plane_lb.nlb_target_group_arn]
+
+  # Wait for succesful attachment of SSM Policy
+  depends_on = [
+    module.iam_policy_control_plane_ssm_write,
+    module.iam_policy_control_plane_s3_write
+  ]
+}
+
+/*
+* KUBERNETES WORKER NODES RESOURCES
+* ---------------------------------
+* Provisions Worker Node infrastructure using Auto Scaling Groups.
+* Configures nodes to automatically discover the Control Plane via SSM and join
+* the cluster to accept workloads.
+*/
+module "k8s_worker_nodes" {
+  source = "./modules/compute"
+
+  # Basic config
+  ec2_name_prefix   = "${local.resource_prefix}-worker-node"
+  ec2_ami_id        = var.compute_worker_nodes_ami_id
+  ec2_instance_type = var.compute_worker_nodes_instance_type
+  ec2_key_name      = var.compute_worker_nodes_key_name
+
+  # Network config
+  ec2_subnet_ids                  = module.network.private_subnet_ids
+  ec2_security_group_ids          = [module.worker_node_security.sg_id]
+  ec2_associate_public_ip_address = false
+
+  # IAM config
+  ec2_iam_instance_profile_name = aws_iam_instance_profile.iam_instance_profile_wn.name
+
+  # User data to join the cluster
+  ec2_user_data = templatefile("k8s_nodes.sh", {
+    ssm_cluster_join_cmd_parameter_name = module.ssm_parameter_cluster_join_command.ssm_parameter_name,
+    aws_region                          = var.main_aws_region
+  })
+
+  # Root volume config
+  ec2_root_volume_size = 30
+  ec2_root_volume_type = "gp3"
+
+  # Auto scaling config
+  ec2_asg_desired_capacity = 2
+  ec2_asg_max_size         = 3
+  ec2_asg_min_size         = 1
+
+  # Wait for succesful attachment of SSM Policy
+  depends_on = [
+    module.iam_policy_worker_node_ssm_read
+  ]
+}
