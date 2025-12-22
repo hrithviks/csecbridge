@@ -1,0 +1,34 @@
+{{- if .Values.networkPolicy.enabled -}}
+# ------------------------------------------------------------------------------------
+# Network Policy for the Postgres Database - allows incoming requests from API-Service
+# ------------------------------------------------------------------------------------
+
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Chart.Name }}
+  labels:
+    app.kubernetes.io/name: {{ .Chart.Name }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  # This policy applies to all pods created by postgres-service StatefulSet.
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ .Chart.Name }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  
+  policyTypes:
+  - Ingress
+
+  # Ingress rule to update the inbound rule for database connection.
+  ingress:
+  - from:
+    # Loop through the allowed pods to connect
+    {{- range .Values.networkPolicy.ingress.from }}
+    - {{ toYaml . | nindent 6 }}
+    {{- end }}
+    ports:
+    # The connection is only allowed on the specified PostgreSQL port.
+    - protocol: TCP
+      port: {{ .Values.service.port }}
+{{- end -}}
