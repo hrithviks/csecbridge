@@ -1,0 +1,81 @@
+{
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "CSecBridge Access Request",
+    "description": "Schema for a single access request to an external platform.",
+    "type": "object",
+    "properties": {
+        "client_request_id": {
+            "description": "The unique ID for the request from the client system (e.g., a ticket number).",
+            "type": "string",
+            "minLength": 1
+        },
+        "target_cloud": {
+            "description": "The external target platform.",
+            "type": "string",
+            "enum": [
+                "aws",
+                "azure",
+                "gcp",
+                "hashicorp"
+            ]
+        },
+        "account_id": {
+            "description": "The cloud provider account ID, project ID, or subscription ID.",
+            "type": "string",
+            "minLength": 1
+        },
+        "context": {
+            "description": "The details of the specific operation to be performed.",
+            "type": "object",
+            "properties": {
+                "principal": {
+                    "description": "The user or service principal requesting access.",
+                    "type": "string"
+                },
+                "principal_type": {
+                    "description": "The type of IAM entity, user or role",
+                    "type": "string"
+                },
+                "action": {
+                    "description": "The action to be performed.",
+                    "type": "string",
+                    "enum": [
+                        "add",
+                        "remove"
+                    ]
+                },
+                "entitlement": {
+                    "description": "The name of the role to be added or removed.",
+                    "type": "string",
+                    "pattern": "^[a-zA-Z0-9_-]+$"
+                },
+                "entitlement_type": {
+                    "description": "The type of entitlement - default or custom",
+                    "type": "string",
+                    "enum": [
+                        "default",
+                        "custom"
+                    ]
+                },
+                "duration_minutes": {
+                    "description": "The duration for which the access is granted, in minutes. Optional for 'remove' actions.",
+                    "type": "integer",
+                    "minimum": 1
+                }
+            },
+            "required": [
+                "principal",
+                "principal_type",
+                "action",
+                "entitlement",
+                "entitlement_type"
+            ]
+        }
+    },
+    "required": [
+        "client_request_id",
+        "target_cloud",
+        "account_id",
+        "context"
+    ]
+}
