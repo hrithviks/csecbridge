@@ -29,3 +29,13 @@ variable "vpc_availability_zones" {
   description = "List of availability zones to distribute subnets across"
   type        = list(string)
 }
+
+variable "vpc_flow_log_iam_role_arn" {
+  description = "IAM Role ARN for VPC Flow Logs"
+  type        = string
+}
+
+variable "vpc_flow_log_destination_arn" {
+  description = "ARN of the destination (CloudWatch Log Group) for VPC Flow Logs"
+  type        = string
+}

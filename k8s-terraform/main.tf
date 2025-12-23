@@ -58,6 +58,62 @@ locals {
 }
 
 /*
+* --------------------------
+* IAM ROLE FOR VPC FLOW LOGS
+* --------------------------
+* Configures the IAM identity for VPC Flow Logs to publish logs to CloudWatch.
+*/
+module "iam_role_vpc_flow_log" {
+  source               = "./modules/iam/roles"
+  iam_role_name        = local.IAM_ROLE_FLOW_LOG_NAME
+  iam_role_description = local.IAM_ROLE_FLOW_LOG_DESC
+  iam_role_assume_role_policy = {
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Principal = {
+          Service = "vpc-flow-logs.amazonaws.com"
+        }
+        Action = "sts:AssumeRole"
+      }
+    ]
+  }
+}
+
+/*
+* ----------------------------
+* IAM POLICY FOR VPC FLOW LOGS
+* ----------------------------
+* Grants the VPC Flow Logs role permission to write logs to CloudWatch.
+*/
+module "iam_policy_vpc_flow_log" {
+  source = "./modules/iam/policies"
+
+  # Policy Config
+  iam_policy_name        = local.IAM_POLICY_FLOW_LOG_NAME
+  iam_policy_description = local.IAM_POLICY_FLOW_LOG_DESC
+  iam_policy_document = {
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "logs:CreateLogStream",
+          "logs:PutLogEvents",
+          "logs:DescribeLogGroups",
+          "logs:DescribeLogStreams"
+        ]
+        Resource = aws_cloudwatch_log_group.flow_log.arn
+      }
+    ]
+  }
+
+  # Policy Attachment Config
+  iam_policy_attachment_role_name = module.iam_role_vpc_flow_log.iam_role_name
+}
+
+/*
 * -----------------
 * NETWORK RESOURCES
 * -----------------
@@ -70,28 +126,18 @@ locals {
 resource "aws_cloudwatch_log_group" "flow_log" {
   name              = "/aws/vpc-flow-log/${local.RESOURCE_PREFIX}-vpc"
   retention_in_days = 7
+  kms_key_id        = aws_kms_key.s3_key.arn
 }
 
 module "network" {
-  source                   = "./modules/network"
-  vpc_resource_prefix      = local.RESOURCE_PREFIX
-  vpc_cidr                 = var.network_vpc_cidr
-  vpc_public_subnets_cidr  = var.network_public_subnets_cidr
-  vpc_private_subnets_cidr = var.network_private_subnets_cidr
-  vpc_availability_zones   = var.network_availability_zones
-}
-
-/*
-* ---------------------
-* VPC FLOW LOG RESOURCE
-* ---------------------
-* Enables capturing of IP traffic for the VPC.
-*/
-resource "aws_flow_log" "main" {
-  iam_role_arn    = module.iam_role_vpc_flow_log.iam_role_arn
-  log_destination = aws_cloudwatch_log_group.flow_log.arn
-  traffic_type    = "ALL"
-  vpc_id          = module.network.vpc_id
+  source                       = "./modules/network"
+  vpc_resource_prefix          = local.RESOURCE_PREFIX
+  vpc_cidr                     = var.network_vpc_cidr
+  vpc_public_subnets_cidr      = var.network_public_subnets_cidr
+  vpc_private_subnets_cidr     = var.network_private_subnets_cidr
+  vpc_availability_zones       = var.network_availability_zones
+  vpc_flow_log_iam_role_arn    = module.iam_role_vpc_flow_log.iam_role_arn
+  vpc_flow_log_destination_arn = aws_cloudwatch_log_group.flow_log.arn
 }
 
 /*
@@ -262,63 +308,6 @@ resource "aws_iam_instance_profile" "iam_instance_profile_wn" {
 }
 
 /*
-* --------------------------
-* IAM ROLE FOR VPC FLOW LOGS
-* --------------------------
-* Configures the IAM identity for VPC Flow Logs to publish logs to CloudWatch.
-*/
-module "iam_role_vpc_flow_log" {
-  source               = "./modules/iam/roles"
-  iam_role_name        = local.IAM_ROLE_FLOW_LOG_NAME
-  iam_role_description = local.IAM_ROLE_FLOW_LOG_DESC
-  iam_role_assume_role_policy = {
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Principal = {
-          Service = "vpc-flow-logs.amazonaws.com"
-        }
-        Action = "sts:AssumeRole"
-      }
-    ]
-  }
-}
-
-/*
-* ----------------------------
-* IAM POLICY FOR VPC FLOW LOGS
-* ----------------------------
-* Grants the VPC Flow Logs role permission to write logs to CloudWatch.
-*/
-module "iam_policy_vpc_flow_log" {
-  source = "./modules/iam/policies"
-
-  # Policy Config
-  iam_policy_name        = local.IAM_POLICY_FLOW_LOG_NAME
-  iam_policy_description = local.IAM_POLICY_FLOW_LOG_DESC
-  iam_policy_document = {
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Action = [
-          "logs:CreateLogGroup",
-          "logs:CreateLogStream",
-          "logs:PutLogEvents",
-          "logs:DescribeLogGroups",
-          "logs:DescribeLogStreams"
-        ]
-        Resource = "*"
-      }
-    ]
-  }
-
-  # Policy Attachment Config
-  iam_policy_attachment_role_name = module.iam_role_vpc_flow_log.iam_role_name
-}
-
-/*
 * --------------------------------------
 * SSM PARAMETER FOR CLUSTER JOIN COMMAND
 * --------------------------------------
@@ -360,6 +349,8 @@ resource "aws_kms_alias" "s3_key" {
 }
 
 data "aws_iam_policy_document" "kms_key_policy" {
+
+  # Allow admin user to manage the key
   statement {
     sid    = "Enable IAM User Permissions"
     effect = "Allow"
@@ -371,6 +362,7 @@ data "aws_iam_policy_document" "kms_key_policy" {
     resources = ["*"]
   }
 
+  # Allow S3 Service to encrypt data
   statement {
     sid    = "Allow S3 Service for Logging"
     effect = "Allow"
@@ -387,6 +379,29 @@ data "aws_iam_policy_document" "kms_key_policy" {
       test     = "StringEquals"
       variable = "aws:SourceAccount"
       values   = [data.aws_caller_identity.current.account_id]
+    }
+  }
+
+  # Allow CloudWatch Logs to encrypt/decrypt data
+  statement {
+    sid    = "Allow CloudWatch Logs"
+    effect = "Allow"
+    principals {
+      type        = "Service"
+      identifiers = ["logs.${var.main_aws_region}.amazonaws.com"]
+    }
+    actions = [
+      "kms:Encrypt*",
+      "kms:Decrypt*",
+      "kms:ReEncrypt*",
+      "kms:GenerateDataKey*",
+      "kms:Describe*"
+    ]
+    resources = ["*"]
+    condition {
+      test     = "ArnLike"
+      variable = "kms:EncryptionContext:aws:logs:arn"
+      values   = ["arn:aws:logs:${var.main_aws_region}:${data.aws_caller_identity.current.account_id}:log-group:*"]
     }
   }
 }

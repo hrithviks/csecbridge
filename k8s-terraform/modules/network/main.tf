@@ -24,6 +24,19 @@ resource "aws_vpc" "main" {
 }
 
 /*
+ * ---------------------
+ * VPC FLOW LOG RESOURCE
+ * ---------------------
+ * Enables capturing of IP traffic for the VPC.
+ */
+resource "aws_flow_log" "main" {
+  iam_role_arn    = var.vpc_flow_log_iam_role_arn
+  log_destination = var.vpc_flow_log_destination_arn
+  traffic_type    = "ALL"
+  vpc_id          = aws_vpc.main.id
+}
+
+/*
  * The Internet Gateway provides a direct path for outbound internet traffic
  * from public subnets and serves as the entry point for external traffic
  * destined for public-facing load balancers.
