@@ -9,6 +9,11 @@
 
 data "aws_caller_identity" "current" {}
 
+data "aws_s3_bucket" "access_logs" {
+  bucket = "csec-app-access-logs"
+  region = var.main_aws_region
+}
+
 locals {
   RESOURCE_PREFIX = "${var.main_project_prefix}-${var.main_cluster_name}"
 
@@ -21,7 +26,6 @@ locals {
   IAM_PROFILE_WN_NAME          = "${local.RESOURCE_PREFIX}-worker-nodes-profile"
   SSM_PARAM_JOIN_CMD_NAME      = "/${local.RESOURCE_PREFIX}/k8s/join-command"
   S3_KUBECONFIG_NAME           = "${local.RESOURCE_PREFIX}-k8s-config"
-  S3_ACCESS_LOGS_NAME          = "${local.RESOURCE_PREFIX}-access-logs"
   IAM_POLICY_CP_SSM_WRITE_NAME = "${local.RESOURCE_PREFIX}-cp-ssm-write-policy"
   IAM_POLICY_CP_S3_WRITE_NAME  = "${local.RESOURCE_PREFIX}-cp-s3-write-policy"
   IAM_POLICY_WN_SSM_READ_NAME  = "${local.RESOURCE_PREFIX}-wn-ssm-read-policy"
@@ -321,24 +325,9 @@ module "s3_kubeconfig_bucket" {
   s3_tags        = {}
 }
 
-/*
-* -------------------------
-* S3 BUCKET FOR ACCESS LOGS
-* -------------------------
-* Stores access logs for the kubeconfig bucket for auditing purposes.
-* tfsec:ignore:aws-s3-enable-bucket-logging
-*/
-module "s3_access_logs_bucket" {
-  source = "./modules/s3"
-
-  s3_bucket_name = local.S3_ACCESS_LOGS_NAME
-  s3_kms_key_arn = aws_kms_key.s3_key.arn
-  s3_tags        = {}
-}
-
 resource "aws_s3_bucket_logging" "kubeconfig_logging" {
   bucket        = module.s3_kubeconfig_bucket.s3_bucket_id
-  target_bucket = module.s3_access_logs_bucket.s3_bucket_id
+  target_bucket = data.aws_s3_bucket.access_logs.id
   target_prefix = "kubeconfig-logs/"
 }
 
