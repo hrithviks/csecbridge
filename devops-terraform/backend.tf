@@ -8,7 +8,7 @@
 terraform {
   backend "s3" {
     bucket       = "csec-app-infra-backend"
-    key          = "k8s-cluster/dev.tfstate"
+    key          = "devops-cluster/devops.tfstate"
     region       = "ap-southeast-1"
     encrypt      = true
     use_lockfile = true
