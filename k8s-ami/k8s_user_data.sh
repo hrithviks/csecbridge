@@ -1,23 +1,28 @@
 #!/bin/bash
-# ----------------------------------------------------------------
+# ------------------------------------------------------------------
 # Script Name  : k8s_user_data.sh
 # Description  : User Data script for K8s Base Golden AMI.
 #                Installs dependencies, Containerd, and K8s tools.
 #                Triggers shutdown upon completion for AMI creation.
-# ----------------------------------------------------------------
+# ------------------------------------------------------------------
 set -e
+
+# Simple log function to help with debugging.
+print_log() {
+    echo -e "\033[1;34m[INFO] $(date '+%Y-%m-%d %H:%M:%S') : $1\033[0m"
+}
 
 # ---------------------------------
 # 1. System Updates & Prerequisites
 # ---------------------------------
-echo "Updating system packages..."
+print_log "Updating system packages..."
 dnf update -y
 dnf install -y iproute-tc # Required for K8s networking (traffic control)
 
 # -----------------------------------------
 # 2. Install Container Runtime (Containerd)
 # -----------------------------------------
-echo "Installing Containerd..."
+print_log "Installing Containerd..."
 dnf install -y containerd
 mkdir -p /etc/containerd
 containerd config default | tee /etc/containerd/config.toml
@@ -29,7 +34,7 @@ systemctl enable --now containerd
 # ------------------------------------------------------------
 # 3. Install Kubernetes Components (Kubelet, Kubeadm, Kubectl)
 # ------------------------------------------------------------
-echo "Installing Kubernetes components..."
+print_log "Installing Kubernetes components..."
 
 # Add Kubernetes YUM repository (Targeting v1.30 stable)
 cat <<EOF | tee /etc/yum.repos.d/kubernetes.repo
@@ -50,5 +55,5 @@ systemctl enable --now kubelet
 # 4. Finalize & Shutdown
 # ----------------------
 # The shutdown signal is detected by the AMI builder script to initiate image creation.
-echo "Provisioning complete. Shutting down..."
+print_log "Provisioning complete. Shutting down..."
 shutdown -h now
