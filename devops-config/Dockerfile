@@ -14,6 +14,9 @@ FROM debian:stable-slim AS builder
 
 ARG TERRAFORM_VERSION="1.14.2"
 ARG KUBECTL_VERSION="v1.34.0"
+ARG TFLINT_VERSION="v0.50.3"
+ARG TRIVY_VERSION="0.50.1"
+ARG TFSEC_VERSION="v1.28.6"
 
 # Install build dependencies
 RUN apt-get update && apt-get install -y curl unzip
@@ -32,6 +35,21 @@ RUN curl -LO "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubec
 RUN curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip" && \
     unzip awscliv2.zip && \
     ./aws/install --bin-dir /aws-cli-bin/ --install-dir /usr/local/aws-cli
+
+# Install TFLint
+RUN curl -LO "https://github.com/terraform-linters/tflint/releases/download/${TFLINT_VERSION}/tflint_linux_amd64.zip" && \
+    unzip tflint_linux_amd64.zip && \
+    mv tflint /usr/local/bin/
+
+# Install Trivy
+RUN curl -LO "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" && \
+    tar xzf "trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" && \
+    mv trivy /usr/local/bin/
+
+# Install tfsec
+RUN curl -LO "https://github.com/aquasecurity/tfsec/releases/download/${TFSEC_VERSION}/tfsec-linux-amd64" && \
+    chmod +x tfsec-linux-amd64 && \
+    mv tfsec-linux-amd64 /usr/local/bin/tfsec
 
 # --------------------
 # Stage 2: Final Image
@@ -59,12 +77,18 @@ RUN apt-get update && \
 COPY --from=builder /usr/local/bin/terraform /usr/local/bin/terraform
 COPY --from=builder /usr/local/bin/kubectl /usr/local/bin/kubectl
 COPY --from=builder /usr/local/aws-cli /usr/local/aws-cli
+COPY --from=builder /usr/local/bin/tflint /usr/local/bin/tflint
+COPY --from=builder /usr/local/bin/trivy /usr/local/bin/trivy
+COPY --from=builder /usr/local/bin/tfsec /usr/local/bin/tfsec
 COPY --from=builder /aws-cli-bin/ /usr/local/bin/
 
 # Verify installations
 RUN terraform --version && \
     kubectl version --client && \
-    aws --version
+    aws --version && \
+    tflint --version && \
+    trivy --version && \
+    tfsec --version
 
 # Set default entrypoint
 CMD ["/bin/bash"]
