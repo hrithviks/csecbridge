@@ -64,3 +64,8 @@ variable "devops_admin_cidr" {
   description = "The CIDR block allowed to SSH into the runner (e.g., your public IP)"
   type        = string
 }
+
+variable "github_repository" {
+  description = "The GitHub repository (org/repo) allowed to assume roles via OIDC"
+  type        = string
+}

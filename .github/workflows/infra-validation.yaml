@@ -3,6 +3,11 @@ name: Infrastructure Validation
 # Manual trigger for validation
 on: workflow_dispatch
 
+# Permissions required for OIDC authentication
+permissions:
+  id-token: write # Required to request the OIDC token
+  contents: read # Required for actions/checkout
+
 jobs:
   validate-infra:
     name: Validate AWS Access

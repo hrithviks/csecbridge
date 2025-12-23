@@ -146,20 +146,16 @@ resource "aws_iam_instance_profile" "runner_base_profile" {
   role = aws_iam_role.runner_base_role.name
 }
 
-resource "aws_iam_role_policy" "runner_base_policy" {
-  name = local.BASE_POLICY_NAME
-  role = aws_iam_role.runner_base_role.id
+# OIDC Provider for GitHub Actions
+resource "aws_iam_openid_connect_provider" "github" {
+  url            = "https://token.actions.githubusercontent.com"
+  client_id_list = ["sts.amazonaws.com"]
 
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect   = "Allow"
-        Action   = "sts:AssumeRole"
-        Resource = "arn:aws:iam::*:role/${local.ROLE_NAME_PREFIX}-*"
-      }
-    ]
-  })
+  # GitHub's OIDC thumbprints (Standard list)
+  thumbprint_list = [
+    "6938fd4d98bab03faadb97b34396831e3780aea1",
+    "1c58a3a8518e8759bf075b76b750d4f2df264fcd"
+  ]
 }
 
 /*
@@ -185,18 +181,20 @@ resource "aws_instance" "devops_runner" {
 
   # Security Hardening: Enforce IMDSv2 to prevent credential theft via SSRF
   metadata_options {
-    http_endpoint = "enabled"
-    http_tokens   = "required"
+    http_endpoint               = "enabled"
+    http_tokens                 = "required"
+    http_put_response_hop_limit = 2
   }
 
   # Install Docker and Git as prerequisites for the runner
   user_data = <<-EOF
               #!/bin/bash
-              yum update -y
-              yum install -y docker git
+              apt-get update -y
+              apt-get install -y docker.io git
               systemctl enable docker
               systemctl start docker
-              usermod -a -G docker ec2-user
+              usermod -a -G docker ubuntu
+              chmod 666 /var/run/docker.sock
               EOF
 
   tags = {
@@ -221,10 +219,16 @@ resource "aws_iam_role" "environment_roles" {
     Version = "2012-10-17"
     Statement = [
       {
-        Action = "sts:AssumeRole"
+        Action = "sts:AssumeRoleWithWebIdentity"
         Effect = "Allow"
         Principal = {
-          AWS = aws_iam_role.runner_base_role.arn
+          Federated = aws_iam_openid_connect_provider.github.arn
+        }
+        Condition = {
+          StringEquals = {
+            "token.actions.githubusercontent.com:sub" = "repo:${var.github_repository}:environment:${each.key}"
+            "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
+          }
         }
       }
     ]
@@ -251,6 +255,19 @@ resource "aws_iam_role_policy" "environment_policies" {
         Condition = {
           StringEquals = {
             "aws:ResourceTag/environment" = each.key
+          }
+        }
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "s3:CreateBucket",
+          "s3:DeleteBucket"
+        ]
+        Resource = "*"
+        Condition = {
+          Null = {
+            "aws:ResourceTag/environment" = "true"
           }
         }
       }

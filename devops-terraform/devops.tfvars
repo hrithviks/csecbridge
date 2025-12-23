@@ -20,3 +20,6 @@ devops_runner_key_name      = "csec-ssh-key-pair"
 
 # Security
 devops_admin_cidr = "0.0.0.0/0" # TODO: Replace with specific IP for security hardening
+
+# OIDC Configuration
+github_repository = "hrithviks/csecbridge"
