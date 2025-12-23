@@ -59,3 +59,8 @@ variable "devops_runner_key_name" {
   type        = string
   default     = null
 }
+
+variable "devops_admin_cidr" {
+  description = "The CIDR block allowed to SSH into the runner (e.g., your public IP)"
+  type        = string
+}
