@@ -15,3 +15,9 @@ variable "s3_tags" {
   type        = map(string)
   default     = {}
 }
+
+variable "s3_kms_key_arn" {
+  description = "The ARN of the KMS key to use for encryption. If null, uses SSE-S3 (AWS Managed Key)."
+  type        = string
+  default     = null
+}

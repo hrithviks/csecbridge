@@ -11,7 +11,7 @@ resource "aws_s3_bucket" "main" {
   tags   = var.s3_tags
 }
 
-# Data Protection: Enable Versioning to recover from accidental overwrites or deletions.
+# Enable Versioning to recover from accidental overwrites or deletions.
 resource "aws_s3_bucket_versioning" "main" {
   bucket = aws_s3_bucket.main.id
   versioning_configuration {
@@ -19,17 +19,7 @@ resource "aws_s3_bucket_versioning" "main" {
   }
 }
 
-# Data Protection: Enforce Server-Side Encryption (SSE-S3) for data at rest.
-resource "aws_s3_bucket_server_side_encryption_configuration" "main" {
-  bucket = aws_s3_bucket.main.id
-  rule {
-    apply_server_side_encryption_by_default {
-      sse_algorithm = "AES256"
-    }
-  }
-}
-
-# Security Architecture: Block all public access to the bucket to prevent data exposure.
+# Block all public access to the bucket to prevent data exposure.
 resource "aws_s3_bucket_public_access_block" "main" {
   bucket = aws_s3_bucket.main.id
 
@@ -39,7 +29,20 @@ resource "aws_s3_bucket_public_access_block" "main" {
   restrict_public_buckets = true
 }
 
-# Security Architecture: Bucket Policy to enforce SSL (HTTPS) requests only.
+# Enabled Server Side Encryption with CMK
+resource "aws_s3_bucket_server_side_encryption_configuration" "main" {
+  bucket = aws_s3_bucket.main.id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      # If a KMS key is provided, use "aws:kms", otherwise use "AES256" (SSE-S3)
+      sse_algorithm     = var.s3_kms_key_arn != null ? "aws:kms" : "AES256"
+      kms_master_key_id = var.s3_kms_key_arn
+    }
+  }
+}
+
+# Bucket Policy to enforce SSL (HTTPS) requests only.
 resource "aws_s3_bucket_policy" "secure_transport" {
   bucket = aws_s3_bucket.main.id
   policy = jsonencode({
