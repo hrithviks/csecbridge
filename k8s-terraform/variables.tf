@@ -18,16 +18,6 @@ variable "main_aws_region" {
   }
 }
 
-variable "main_environment" {
-  description = "The deployment environment (e.g., dev, qa, prod)"
-  type        = string
-
-  validation {
-    condition     = contains(["dev", "qa", "prod"], var.main_environment)
-    error_message = "Environment must be one of: dev, qa, prod."
-  }
-}
-
 variable "main_default_tags" {
   description = "The default tags for all the resources"
   type        = map(any)
