@@ -86,7 +86,7 @@ resource "aws_subnet" "public" {
   vpc_id                  = aws_vpc.main.id
   cidr_block              = var.vpc_public_subnets_cidr[count.index]
   availability_zone       = element(var.vpc_availability_zones, count.index)
-  map_public_ip_on_launch = true # Auto-assign public IPs to instances launched in this subnet
+  map_public_ip_on_launch = false
 
   tags = {
     Name                     = "${var.vpc_resource_prefix}-public-subnet-${count.index + 1}"
