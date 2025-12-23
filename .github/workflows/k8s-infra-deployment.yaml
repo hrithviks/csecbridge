@@ -1,0 +1,262 @@
+# -----------------------------------------------------------------------------
+# Script  : .github/workflows/k8s-infra-deployment.yaml
+# Purpose : Workflow to build and deploy Terraform configuration for K8s infra.
+# -----------------------------------------------------------------------------
+name: Kubernetes Infrastructure Deployment Workflow
+
+# Trigger on manual dispatch
+on: workflow_dispatch
+#  push:
+#    branches:
+#      - main
+#      - dev
+#    paths:
+#      - "k8s-terraform/**"
+
+# Permissions required for OIDC authentication
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  TF_WORKING_DIR: k8s-terraform
+
+jobs:
+  # -----------------------------------------------------
+  # JOB 1: Validation (Linting, Formatting, Code Quality)
+  # -----------------------------------------------------
+  #
+  #
+  validate:
+    name: Terraform Validation
+    # Description: Performs static code analysis and formatting checks on Terraform configurations.
+    runs-on: csec-self-hosted
+
+    container:
+      image: ${{ vars.GH_RUNNER_IMAGE}}
+      credentials:
+        username: ${{ secrets.GH_USER }}
+        password: ${{ secrets.GH_TOKEN }}
+
+    steps:
+      # ----------------------
+      # Step 1 : Code Checkout
+      # ----------------------
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # -----------------------
+      # Step 2 : Init Terraform
+      # -----------------------
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      # -----------------------------
+      # Step 3 : Check Code Formatting
+      # -----------------------------
+      - name: Terraform Format Check
+        run: terraform fmt -check -recursive
+        working-directory: ${{ env.TF_WORKING_DIR }}
+
+      # --------------------------------
+      # Step 4 : Initialize (Backendless)
+      # --------------------------------
+      - name: Terraform Init (Backendless)
+        run: terraform init -backend=false
+        working-directory: ${{ env.TF_WORKING_DIR }}
+
+      # -----------------------
+      # Step 5 : Validate Config
+      # -----------------------
+      - name: Terraform Validate
+        run: terraform validate
+        working-directory: ${{ env.TF_WORKING_DIR }}
+
+  # -------------------------------------------------
+  # JOB 2: SAST (Static Application Security Testing)
+  # -------------------------------------------------
+  #
+  #
+  sast:
+    name: Infrastructure SAST
+    # Description: Scans the infrastructure code for security vulnerabilities and best practice violations.
+    runs-on: csec-self-hosted
+
+    container:
+      image: ${{ vars.GH_RUNNER_IMAGE}}
+      credentials:
+        username: ${{ secrets.GH_USER }}
+        password: ${{ secrets.GH_TOKEN }}
+
+    steps:
+      # ----------------------
+      # Step 1 : Code Checkout
+      # ----------------------
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # --------------------
+      # Step 2 : Setup TFLint
+      # --------------------
+      - name: Setup TFLint
+        uses: terraform-linters/setup-tflint@v4
+
+      # ------------------
+      # Step 3 : Run TFLint
+      # ------------------
+      - name: Run TFLint
+        run: |
+          tflint --init
+          tflint
+        working-directory: ${{ env.TF_WORKING_DIR }}
+
+      # ---------------------------------
+      # Step 4 : Run Trivy Security Scan
+      # ---------------------------------
+      - name: Run Trivy Vulnerability Scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: "config"
+          scan-ref: ${{ env.TF_WORKING_DIR }}
+          exit-code: "0"
+          severity: "CRITICAL,HIGH"
+
+  # --------------------------------
+  # JOB 3: Deployment to DEV Cluster
+  # --------------------------------
+  deploy-dev:
+    name: Deploy to DEV Cluster
+    # Description: Provisions and updates the Kubernetes infrastructure in the development environment.
+    needs: [validate, sast]
+    runs-on: csec-self-hosted
+    environment: dev
+
+    # Use the custom runner image
+    container:
+      image: ${{ vars.GH_RUNNER_IMAGE}}
+      credentials:
+        username: ${{ secrets.GH_USER }}
+        password: ${{ secrets.GH_TOKEN }}
+
+    steps:
+      # ----------------------
+      # Step 1 : Code Checkout
+      # ----------------------
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # ----------------------------------
+      # Step 2 : Configure AWS Credentials
+      # ----------------------------------
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ vars.AWS_REGION }}
+          role-to-assume: ${{ secrets.AWS_IAM_ROLE_ARN }}
+          role-skip-session-tagging: true
+
+      # ----------------------------------
+      # Step 3 : Download Terraform Config
+      # ----------------------------------
+      - name: Download TFVars from S3
+        run: aws s3 cp "s3://${{ secrets.AWS_S3_TF_VAR_FILE }}" terraform.tfvars
+        working-directory: ${{ env.TF_WORKING_DIR }}
+
+      # -----------------------
+      # Step 4 : Setup Terraform
+      # -----------------------
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      # ---------------------------
+      # Step 5 : Initialize Backend
+      # ---------------------------
+      - name: Initialize Backend
+        run: terraform init -reconfigure
+        working-directory: ${{ env.TF_WORKING_DIR }}
+
+      # ---------------------------
+      # Step 6 : Generate Exec Plan
+      # ---------------------------
+      - name: Terraform Plan
+        run: terraform plan -out=tfplan
+        working-directory: ${{ env.TF_WORKING_DIR }}
+
+      # ---------------------------
+      # Step 7 : Apply Infra Changes
+      # ---------------------------
+      - name: Terraform Apply
+        run: terraform apply -auto-approve tfplan
+        working-directory: ${{ env.TF_WORKING_DIR }}
+
+  # -------------------------------
+  # JOB 4: Deployment to QA Cluster
+  # -------------------------------
+  deploy-qa:
+    if: false # Disabled for now
+    name: Deploy to QA Cluster
+    # Description: Provisions and updates the Kubernetes infrastructure in the qa environment.
+    needs: [validate, sast]
+    runs-on: csec-self-hosted
+    environment: qa
+
+    env:
+      GH_USER: ${{ secrets.GH_USER }}
+
+    # Use the custom runner image
+    container:
+      image: ${{ vars.GH_RUNNER_IMAGE}}
+      credentials:
+        username: ${{ secrets.GH_USER }}
+        password: ${{ secrets.GH_TOKEN }}
+
+    steps:
+      # ----------------------
+      # Step 1 : Code Checkout
+      # ----------------------
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # ----------------------------------
+      # Step 2 : Configure AWS Credentials
+      # ----------------------------------
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ vars.AWS_REGION }}
+          role-to-assume: ${{ secrets.AWS_IAM_ROLE_ARN }}
+          role-skip-session-tagging: true
+
+      # ----------------------------------
+      # Step 3 : Download Terraform Config
+      # ----------------------------------
+      - name: Download TFVars from S3
+        run: aws s3 cp "s3://${{ secrets.AWS_S3_TF_VAR_FILE }}" terraform.tfvars
+        working-directory: ${{ env.TF_WORKING_DIR }}
+
+      # -----------------------
+      # Step 4 : Setup Terraform
+      # -----------------------
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      # ---------------------------
+      # Step 5 : Initialize Backend
+      # ---------------------------
+      - name: Initialize Backend
+        run: terraform init -reconfigure
+        working-directory: ${{ env.TF_WORKING_DIR }}
+
+      # ---------------------------
+      # Step 6 : Generate Exec Plan
+      # ---------------------------
+      - name: Terraform Plan
+        run: terraform plan -out=tfplan
+        working-directory: ${{ env.TF_WORKING_DIR }}
+
+      # ---------------------------
+      # Step 7 : Apply Infra Changes
+      # ---------------------------
+      - name: Terraform Apply
+        run: terraform apply -auto-approve tfplan
+        working-directory: ${{ env.TF_WORKING_DIR }}
