@@ -6,9 +6,16 @@
  * Scope        : Root
  */
 
+# Get the current AWS account ID and region
+data "aws_caller_identity" "current" {}
+data "aws_region" "current" {}
+
 locals {
   RESOURCE_PREFIX = "${var.main_project_prefix}-devops"
   ENVIRONMENTS    = toset(["dev", "qa", "prod"])
+  ACCOUNT_ID      = data.aws_caller_identity.current.account_id
+  REGION          = data.aws_region.current.name
+  PROJECT_PREFIX  = var.main_project_prefix
 
   # Resource Names
   VPC_NAME           = "${local.RESOURCE_PREFIX}-vpc"
@@ -19,13 +26,54 @@ locals {
   RUNNER_NAME        = "${local.RESOURCE_PREFIX}-runner"
   ROLE_NAME_PREFIX   = "${local.RESOURCE_PREFIX}-role"
   POLICY_NAME_PREFIX = "${local.RESOURCE_PREFIX}-policy"
-  BASE_ROLE_NAME     = "${local.RESOURCE_PREFIX}-runner-base-role"
-  BASE_PROFILE_NAME  = "${local.RESOURCE_PREFIX}-runner-base-profile"
-  BASE_POLICY_NAME   = "${local.RESOURCE_PREFIX}-runner-base-policy"
 
   # Resource Descriptions
-  SG_DESC        = "Security group for DevOps runner instances"
-  BASE_ROLE_DESC = "IAM Role for the GitHub Runner EC2 instance allowing it to assume environment roles"
+  SG_DESC = "Security group for DevOps runner instances"
+
+  # IAM allowed actions for "apply" and "destroy"
+  IAM_WRITE_ACTIONS = [
+    "ec2:*",
+    "elasticloadbalancing:*",
+    "autoscaling:*",
+    "iam:*",
+    "s3:*",
+    "ssm:*",
+    "logs:*",
+    "cloudwatch:*"
+  ]
+
+  # IAM allowed actions for state refresh
+  IAM_READ_ACTIONS = [
+    "ec2:Describe*",
+    "iam:List*",
+    "iam:Get*",
+    "s3:List*",
+    "s3:GetBucketLocation",
+    "autoscaling:Describe*",
+    "elasticloadbalancing:Describe*",
+    "ssm:Describe*",
+    "ssm:GetParameter*"
+  ]
+
+  # IAM allowed resources for "apply" and "destroy"
+  IAM_ALLOWED_RESOURCES = [
+    # Region-specific resources in this account (EC2, ELB, ASG, SSM, Logs)
+    "arn:aws:ec2:${local.REGION}:${local.ACCOUNT_ID}:*",
+    "arn:aws:elasticloadbalancing:${local.REGION}:${local.ACCOUNT_ID}:*",
+    "arn:aws:autoscaling:${local.REGION}:${local.ACCOUNT_ID}:*",
+    "arn:aws:ssm:${local.REGION}:${local.ACCOUNT_ID}:*",
+    "arn:aws:logs:${local.REGION}:${local.ACCOUNT_ID}:*",
+    "arn:aws:cloudwatch:${local.REGION}:${local.ACCOUNT_ID}:*",
+    # Allow using public AMIs (owned by other accounts)
+    "arn:aws:ec2:${local.REGION}::image/*",
+    # IAM Resources (Enforce naming prefix)
+    "arn:aws:iam::${local.ACCOUNT_ID}:role/${local.PROJECT_PREFIX}-*",
+    "arn:aws:iam::${local.ACCOUNT_ID}:policy/${local.PROJECT_PREFIX}-*",
+    "arn:aws:iam::${local.ACCOUNT_ID}:instance-profile/${local.PROJECT_PREFIX}-*",
+    # S3 Buckets (Enforce naming prefix)
+    "arn:aws:s3:::${local.PROJECT_PREFIX}-*",
+    "arn:aws:s3:::${local.PROJECT_PREFIX}-*/*"
+  ]
 }
 
 /*
@@ -112,40 +160,6 @@ resource "aws_security_group" "devops_sg" {
   }
 }
 
-/*
-* ------------------------------------
-* IAM ROLE FOR RUNNER INSTANCE (BASE)
-* ------------------------------------
-* The base identity attached to the EC2 runner. It has no permissions itself
-* other than the ability to assume the specific environment roles.
-*/
-resource "aws_iam_role" "runner_base_role" {
-  name        = local.BASE_ROLE_NAME
-  description = local.BASE_ROLE_DESC
-
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Action = "sts:AssumeRole"
-        Effect = "Allow"
-        Principal = {
-          Service = "ec2.amazonaws.com"
-        }
-      }
-    ]
-  })
-
-  tags = {
-    Name = local.BASE_ROLE_NAME
-  }
-}
-
-resource "aws_iam_instance_profile" "runner_base_profile" {
-  name = local.BASE_PROFILE_NAME
-  role = aws_iam_role.runner_base_role.name
-}
-
 # OIDC Provider for GitHub Actions
 resource "aws_iam_openid_connect_provider" "github" {
   url            = "https://token.actions.githubusercontent.com"
@@ -171,7 +185,6 @@ resource "aws_instance" "devops_runner" {
   subnet_id                   = aws_subnet.devops_public_subnet.id
   vpc_security_group_ids      = [aws_security_group.devops_sg.id]
   key_name                    = var.devops_runner_key_name
-  iam_instance_profile        = aws_iam_instance_profile.runner_base_profile.name
   associate_public_ip_address = true
 
   root_block_device {
@@ -250,8 +263,8 @@ resource "aws_iam_role_policy" "environment_policies" {
     Statement = [
       {
         Effect   = "Allow"
-        Action   = "*"
-        Resource = "*"
+        Action   = local.IAM_WRITE_ACTIONS
+        Resource = local.IAM_ALLOWED_RESOURCES
         Condition = {
           StringEquals = {
             "aws:ResourceTag/environment" = each.key
@@ -264,12 +277,17 @@ resource "aws_iam_role_policy" "environment_policies" {
           "s3:CreateBucket",
           "s3:DeleteBucket"
         ]
-        Resource = "*"
+        Resource = "arn:aws:s3:::${local.PROJECT_PREFIX}-*"
         Condition = {
           Null = {
             "aws:ResourceTag/environment" = "true"
           }
         }
+      },
+      {
+        Effect   = "Allow"
+        Action   = local.IAM_READ_ACTIONS
+        Resource = "*"
       }
     ]
   })
