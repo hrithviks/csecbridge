@@ -135,7 +135,6 @@ jobs:
     needs: [validate, sast]
     runs-on: csec-self-hosted
     environment: dev
-    if: false # Disabled for now
 
     # Use the custom runner image
     container:
