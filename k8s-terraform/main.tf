@@ -141,6 +141,36 @@ module "network" {
 }
 
 /*
+* ----------------------
+* VPC PEERING CONNECTION
+* ----------------------
+* Establishes a private network connection between the K8s VPC and the DevOps VPC.
+* Allows the DevOps runner to access the internal K8s API.
+*/
+resource "aws_vpc_peering_connection" "devops_peering" {
+  peer_vpc_id = var.devops_vpc_id
+  vpc_id      = module.network.vpc_id
+  auto_accept = true
+
+  tags = {
+    Name = "${local.RESOURCE_PREFIX}-peering-devops"
+  }
+}
+
+resource "aws_route" "peering_public" {
+  route_table_id            = module.network.public_route_table_id
+  destination_cidr_block    = var.devops_vpc_cidr
+  vpc_peering_connection_id = aws_vpc_peering_connection.devops_peering.id
+}
+
+resource "aws_route" "peering_private" {
+  count                     = length(var.network_private_subnets_cidr)
+  route_table_id            = module.network.private_route_table_ids[count.index]
+  destination_cidr_block    = var.devops_vpc_cidr
+  vpc_peering_connection_id = aws_vpc_peering_connection.devops_peering.id
+}
+
+/*
 * --------------------------------
 * SECURITY GROUP FOR CONTROL PLANE
 * --------------------------------
@@ -183,7 +213,7 @@ module "worker_node_security" {
 resource "aws_vpc_security_group_ingress_rule" "cp_ssh_ingress" {
   security_group_id = module.control_plane_security.sg_id
   description       = local.CP_SG_SSH_INGRESS
-  cidr_ipv4         = "0.0.0.0/0"
+  cidr_ipv4         = var.devops_vpc_cidr
   from_port         = 22
   ip_protocol       = "tcp"
   to_port           = 22
@@ -192,7 +222,7 @@ resource "aws_vpc_security_group_ingress_rule" "cp_ssh_ingress" {
 resource "aws_vpc_security_group_ingress_rule" "cp_api_ingress" {
   security_group_id = module.control_plane_security.sg_id
   description       = local.CP_SG_API_INGRESS
-  cidr_ipv4         = "0.0.0.0/0"
+  cidr_ipv4         = var.devops_vpc_cidr
   from_port         = 6443
   ip_protocol       = "tcp"
   to_port           = 6443
@@ -544,9 +574,9 @@ module "control_plane_lb" {
 
   # NLB Config
   nlb_name               = local.NLB_CP_NAME
-  nlb_internal_enabled   = false
+  nlb_internal_enabled   = true
   nlb_cross_zone_enabled = true
-  nlb_subnet_ids         = module.network.public_subnet_ids
+  nlb_subnet_ids         = module.network.private_subnet_ids
 
   # NLB Target Group Config
   nlb_target_group_name = local.NLB_TG_CP_NAME

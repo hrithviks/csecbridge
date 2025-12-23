@@ -119,3 +119,13 @@ variable "compute_k8s_instance_ssh_key_name" {
   description = "The SSH key for the K8s instances"
   type        = string
 }
+
+variable "devops_vpc_id" {
+  description = "The ID of the DevOps VPC for peering."
+  type        = string
+}
+
+variable "devops_vpc_cidr" {
+  description = "The CIDR block of the DevOps VPC for routing."
+  type        = string
+}
