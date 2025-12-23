@@ -24,6 +24,8 @@ locals {
   IAM_PROFILE_CP_NAME          = "${local.RESOURCE_PREFIX}-control-plane-profile"
   IAM_ROLE_WN_NAME             = "${local.RESOURCE_PREFIX}-worker-nodes-role"
   IAM_PROFILE_WN_NAME          = "${local.RESOURCE_PREFIX}-worker-nodes-profile"
+  IAM_ROLE_FLOW_LOG_NAME       = "${local.RESOURCE_PREFIX}-vpc-flow-log-role"
+  IAM_POLICY_FLOW_LOG_NAME     = "${local.RESOURCE_PREFIX}-vpc-flow-log-policy"
   SSM_PARAM_JOIN_CMD_NAME      = "/${local.RESOURCE_PREFIX}/k8s/join-command"
   S3_KUBECONFIG_NAME           = "${local.RESOURCE_PREFIX}-k8s-config"
   IAM_POLICY_CP_SSM_WRITE_NAME = "${local.RESOURCE_PREFIX}-cp-ssm-write-policy"
@@ -47,6 +49,8 @@ locals {
   WORKER_SG_INTERNET_ACCESS    = "Allow unrestricted internet egress from Worker Nodes"
   IAM_ROLE_CP_DESC             = "IAM Role for Control Plane instances"
   IAM_ROLE_WN_DESC             = "IAM Role for Worker Node instances"
+  IAM_ROLE_FLOW_LOG_DESC       = "IAM Role for VPC Flow Logs"
+  IAM_POLICY_FLOW_LOG_DESC     = "Policy granting VPC Flow Logs access to CloudWatch"
   SSM_PARAM_JOIN_CMD_DESC      = "Stores the kubeadm join command required for worker nodes to join the cluster"
   IAM_POLICY_CP_SSM_WRITE_DESC = "Policy granting Control Plane write access to SSM Parameter Store"
   IAM_POLICY_CP_S3_WRITE_DESC  = "Policy granting Control Plane write access to Kubeconfig S3 Bucket"
@@ -61,6 +65,13 @@ locals {
 * Establishes the foundational network topology with public and private 
 * isolation zones required for the Kubernetes cluster.
 */
+
+# Create log group for flow logs
+resource "aws_cloudwatch_log_group" "flow_log" {
+  name              = "/aws/vpc-flow-log/${local.RESOURCE_PREFIX}-vpc"
+  retention_in_days = 7
+}
+
 module "network" {
   source                   = "./modules/network"
   vpc_resource_prefix      = local.RESOURCE_PREFIX
@@ -68,6 +79,19 @@ module "network" {
   vpc_public_subnets_cidr  = var.network_public_subnets_cidr
   vpc_private_subnets_cidr = var.network_private_subnets_cidr
   vpc_availability_zones   = var.network_availability_zones
+}
+
+/*
+* ---------------------
+* VPC FLOW LOG RESOURCE
+* ---------------------
+* Enables capturing of IP traffic for the VPC.
+*/
+resource "aws_flow_log" "main" {
+  iam_role_arn    = module.iam_role_vpc_flow_log.iam_role_arn
+  log_destination = aws_cloudwatch_log_group.flow_log.arn
+  traffic_type    = "ALL"
+  vpc_id          = module.network.vpc_id
 }
 
 /*
@@ -235,6 +259,63 @@ module "iam_role_worker_nodes" {
 resource "aws_iam_instance_profile" "iam_instance_profile_wn" {
   name = local.IAM_PROFILE_WN_NAME
   role = module.iam_role_worker_nodes.iam_role_name
+}
+
+/*
+* --------------------------
+* IAM ROLE FOR VPC FLOW LOGS
+* --------------------------
+* Configures the IAM identity for VPC Flow Logs to publish logs to CloudWatch.
+*/
+module "iam_role_vpc_flow_log" {
+  source               = "./modules/iam/roles"
+  iam_role_name        = local.IAM_ROLE_FLOW_LOG_NAME
+  iam_role_description = local.IAM_ROLE_FLOW_LOG_DESC
+  iam_role_assume_role_policy = {
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Principal = {
+          Service = "vpc-flow-logs.amazonaws.com"
+        }
+        Action = "sts:AssumeRole"
+      }
+    ]
+  }
+}
+
+/*
+* ----------------------------
+* IAM POLICY FOR VPC FLOW LOGS
+* ----------------------------
+* Grants the VPC Flow Logs role permission to write logs to CloudWatch.
+*/
+module "iam_policy_vpc_flow_log" {
+  source = "./modules/iam/policies"
+
+  # Policy Config
+  iam_policy_name        = local.IAM_POLICY_FLOW_LOG_NAME
+  iam_policy_description = local.IAM_POLICY_FLOW_LOG_DESC
+  iam_policy_document = {
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "logs:CreateLogGroup",
+          "logs:CreateLogStream",
+          "logs:PutLogEvents",
+          "logs:DescribeLogGroups",
+          "logs:DescribeLogStreams"
+        ]
+        Resource = "*"
+      }
+    ]
+  }
+
+  # Policy Attachment Config
+  iam_policy_attachment_role_name = module.iam_role_vpc_flow_log.iam_role_name
 }
 
 /*
