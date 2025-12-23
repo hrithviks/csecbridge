@@ -2,7 +2,6 @@
 * Main section variables
 */
 main_aws_region     = "ap-southeast-1"
-main_environment    = "dev"
 main_cluster_name   = "dev"
 main_project_prefix = "csec"
 main_default_tags = {
@@ -10,6 +9,7 @@ main_default_tags = {
   application = "csec-app-infra-cluster"
   created     = "21-Dec-2025"
   contact     = "admin@csecbridge.org"
+  environment = "dev"
 }
 
 /*
@@ -58,6 +58,6 @@ compute_worker_nodes_iam_role_policy = {
     }
   ]
 }
-compute_k8s_instance_ami_id       = "ami-04729fef62400cb76"
+compute_k8s_instance_ami_id       = "ami-0d97009afb6707d71"
 compute_k8s_instance_type         = "t3.small"
 compute_k8s_instance_ssh_key_name = "csec-ssh-key-pair"
