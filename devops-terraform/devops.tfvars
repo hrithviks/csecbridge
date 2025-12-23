@@ -17,3 +17,6 @@ devops_availability_zone  = "ap-southeast-1a"
 devops_runner_ami_id        = "ami-06c4be2792f419b7b" # Amazon Linux 2023 (ap-southeast-1)
 devops_runner_instance_type = "t3.small"
 devops_runner_key_name      = "csec-ssh-key-pair"
+
+# Security
+devops_admin_cidr = "0.0.0.0/0" # TODO: Replace with specific IP for security hardening
