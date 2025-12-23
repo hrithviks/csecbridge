@@ -69,3 +69,9 @@ variable "github_repository" {
   description = "The GitHub repository (org/repo) allowed to assume roles via OIDC"
   type        = string
 }
+
+variable "github_runner_token" {
+  description = "The GitHub runner registration token"
+  type        = string
+  sensitive   = true
+}
