@@ -14,7 +14,7 @@ locals {
   RESOURCE_PREFIX = "${var.main_project_prefix}-devops"
   ENVIRONMENTS    = toset(["dev", "qa", "prod"])
   ACCOUNT_ID      = data.aws_caller_identity.current.account_id
-  REGION          = data.aws_region.current.name
+  REGION          = data.aws_region.current.id
   PROJECT_PREFIX  = var.main_project_prefix
 
   # Resource Names
@@ -199,15 +199,32 @@ resource "aws_instance" "devops_runner" {
     http_put_response_hop_limit = 2
   }
 
+  user_data_replace_on_change = true
+
   # Install Docker and Git as prerequisites for the runner
   user_data = <<-EOF
               #!/bin/bash
               apt-get update -y
-              apt-get install -y docker.io git
+              apt-get install -y docker.io git curl jq libdigest-sha-perl
+
+              echo "Enabling Docker..."
               systemctl enable docker
               systemctl start docker
               usermod -a -G docker ubuntu
               chmod 666 /var/run/docker.sock
+
+              echo "Registering GitHub Actions runner..."
+              mkdir /home/ubuntu/actions-runner && cd /home/ubuntu/actions-runner
+              LATEST_VERSION=$(curl -s https://api.github.com/repos/actions/runner/releases/latest | jq -r .tag_name | sed 's/v//')
+              [ -z "$LATEST_VERSION" ] || [ "$LATEST_VERSION" = "null" ] && LATEST_VERSION="2.312.0"
+              curl -o actions-runner-linux-x64-$${LATEST_VERSION}.tar.gz -L https://github.com/actions/runner/releases/download/v$${LATEST_VERSION}/actions-runner-linux-x64-$${LATEST_VERSION}.tar.gz
+              tar xzf ./actions-runner-linux-x64-$${LATEST_VERSION}.tar.gz
+              ./bin/installdependencies.sh
+
+              chown -R ubuntu:ubuntu /home/ubuntu/actions-runner
+              su - ubuntu -c "cd /home/ubuntu/actions-runner && ./config.sh --url https://github.com/${var.github_repository} --token ${var.github_runner_token} --unattended --name ${local.RUNNER_NAME} --labels csec-self-hosted"
+              ./svc.sh install ubuntu
+              ./svc.sh start
               EOF
 
   tags = {
@@ -261,6 +278,7 @@ resource "aws_iam_role_policy" "environment_policies" {
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
+      # Permission to create/destroy/update managed resources.
       {
         Effect   = "Allow"
         Action   = local.IAM_WRITE_ACTIONS
@@ -271,6 +289,7 @@ resource "aws_iam_role_policy" "environment_policies" {
           }
         }
       },
+      # Permission to create test S3 bucket for validation
       {
         Effect = "Allow"
         Action = [
@@ -284,6 +303,33 @@ resource "aws_iam_role_policy" "environment_policies" {
           }
         }
       },
+      # Permission to get the tfvars file for each environment.
+      {
+        Effect = "Allow"
+        Action = [
+          "s3:GetObject"
+        ]
+        Resource = "arn:aws:s3:::csec-app-infra-backend/k8s-cluster-config/${each.key}.tfvars"
+      },
+      # Permission to create and update state file and lock files.
+      {
+        Effect = "Allow"
+        Action = [
+          "s3:GetObject",
+          "s3:PutObject",
+          "s3:DeleteObject"
+        ]
+        Resource = "arn:aws:s3:::csec-app-infra-backend/k8s-cluster/csec-${each.key}.tfstate*"
+      },
+      # Explicit permission to list the bucket contents.
+      {
+        Effect = "Allow"
+        Action = [
+          "s3:ListBucket"
+        ]
+        Resource = "arn:aws:s3:::csec-app-infra-backend"
+      },
+      # Permission to capture the state of all managed resources.
       {
         Effect   = "Allow"
         Action   = local.IAM_READ_ACTIONS
