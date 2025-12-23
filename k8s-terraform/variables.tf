@@ -110,8 +110,8 @@ variable "compute_k8s_instance_type" {
   type        = string
 
   validation {
-    condition     = contains(["t3.micro", "t3.small", "t3.medium"], var.compute_k8s_instance_type)
-    error_message = "Instance type must be t3.micro, t3.small, or t3.medium."
+    condition     = contains(["t3.small", "t3.medium"], var.compute_k8s_instance_type)
+    error_message = "Instance type must be t3.small, or t3.medium."
   }
 }
 
