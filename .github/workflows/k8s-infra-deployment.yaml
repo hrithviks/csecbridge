@@ -167,28 +167,22 @@ jobs:
         run: aws s3 cp "s3://${{ secrets.AWS_S3_TF_VAR_FILE }}" terraform.tfvars
         working-directory: ${{ env.TF_WORKING_DIR }}
 
-      # -----------------------
-      # Step 4 : Setup Terraform
-      # -----------------------
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-
       # ---------------------------
-      # Step 5 : Initialize Backend
+      # Step 4 : Initialize Backend
       # ---------------------------
       - name: Initialize Backend
         run: terraform init -reconfigure
         working-directory: ${{ env.TF_WORKING_DIR }}
 
       # ---------------------------
-      # Step 6 : Generate Exec Plan
+      # Step 5 : Generate Exec Plan
       # ---------------------------
       - name: Terraform Plan
-        run: terraform plan -out=tfplan
+        run: terraform plan -var-file=terraform.tfvars -out=tfplan
         working-directory: ${{ env.TF_WORKING_DIR }}
 
       # ---------------------------
-      # Step 7 : Apply Infra Changes
+      # Step 6 : Apply Infra Changes
       # ---------------------------
       - name: Terraform Apply
         run: terraform apply -auto-approve tfplan
@@ -240,28 +234,22 @@ jobs:
         run: aws s3 cp "s3://${{ secrets.AWS_S3_TF_VAR_FILE }}" terraform.tfvars
         working-directory: ${{ env.TF_WORKING_DIR }}
 
-      # -----------------------
-      # Step 4 : Setup Terraform
-      # -----------------------
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-
       # ---------------------------
-      # Step 5 : Initialize Backend
+      # Step 4 : Initialize Backend
       # ---------------------------
       - name: Initialize Backend
         run: terraform init -reconfigure
         working-directory: ${{ env.TF_WORKING_DIR }}
 
       # ---------------------------
-      # Step 6 : Generate Exec Plan
+      # Step 5 : Generate Exec Plan
       # ---------------------------
       - name: Terraform Plan
-        run: terraform plan -out=tfplan
+        run: terraform plan -var-file=terraform.tfvars -out=tfplan
         working-directory: ${{ env.TF_WORKING_DIR }}
 
       # ---------------------------
-      # Step 7 : Apply Infra Changes
+      # Step 6 : Apply Infra Changes
       # ---------------------------
       - name: Terraform Apply
         run: terraform apply -auto-approve tfplan
