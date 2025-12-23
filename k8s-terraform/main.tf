@@ -7,6 +7,8 @@
  * Scope        : Root
  */
 
+data "aws_caller_identity" "current" {}
+
 locals {
   RESOURCE_PREFIX = "${var.main_project_prefix}-${var.main_cluster_name}"
 
@@ -19,6 +21,7 @@ locals {
   IAM_PROFILE_WN_NAME          = "${local.RESOURCE_PREFIX}-worker-nodes-profile"
   SSM_PARAM_JOIN_CMD_NAME      = "/${local.RESOURCE_PREFIX}/k8s/join-command"
   S3_KUBECONFIG_NAME           = "${local.RESOURCE_PREFIX}-k8s-config"
+  S3_ACCESS_LOGS_NAME          = "${local.RESOURCE_PREFIX}-access-logs"
   IAM_POLICY_CP_SSM_WRITE_NAME = "${local.RESOURCE_PREFIX}-cp-ssm-write-policy"
   IAM_POLICY_CP_S3_WRITE_NAME  = "${local.RESOURCE_PREFIX}-cp-s3-write-policy"
   IAM_POLICY_WN_SSM_READ_NAME  = "${local.RESOURCE_PREFIX}-wn-ssm-read-policy"
@@ -253,6 +256,57 @@ module "ssm_parameter_cluster_join_command" {
 }
 
 /*
+* -------------------------
+* KMS KEY FOR S3 ENCRYPTION
+* -------------------------
+* Customer Managed Key (CMK) for encrypting S3 buckets
+* to meet compliance requirements.
+*/
+resource "aws_kms_key" "s3_key" {
+  description             = "KMS key for S3 bucket encryption"
+  deletion_window_in_days = 10
+  enable_key_rotation     = true
+  policy                  = data.aws_iam_policy_document.kms_key_policy.json
+}
+
+resource "aws_kms_alias" "s3_key" {
+  name          = "alias/${local.RESOURCE_PREFIX}-s3-key"
+  target_key_id = aws_kms_key.s3_key.key_id
+}
+
+data "aws_iam_policy_document" "kms_key_policy" {
+  statement {
+    sid    = "Enable IAM User Permissions"
+    effect = "Allow"
+    principals {
+      type        = "AWS"
+      identifiers = ["arn:aws:iam::${data.aws_caller_identity.current.account_id}:root"]
+    }
+    actions   = ["kms:*"]
+    resources = ["*"]
+  }
+
+  statement {
+    sid    = "Allow S3 Service for Logging"
+    effect = "Allow"
+    principals {
+      type        = "Service"
+      identifiers = ["logging.s3.amazonaws.com"]
+    }
+    actions = [
+      "kms:Encrypt",
+      "kms:GenerateDataKey"
+    ]
+    resources = ["*"]
+    condition {
+      test     = "StringEquals"
+      variable = "aws:SourceAccount"
+      values   = [data.aws_caller_identity.current.account_id]
+    }
+  }
+}
+
+/*
 * ------------------------
 * S3 BUCKET FOR KUBECONFIG
 * ------------------------
@@ -263,15 +317,37 @@ module "s3_kubeconfig_bucket" {
   source = "./modules/s3"
 
   s3_bucket_name = local.S3_KUBECONFIG_NAME
+  s3_kms_key_arn = aws_kms_key.s3_key.arn
   s3_tags        = {}
+}
+
+/*
+* -------------------------
+* S3 BUCKET FOR ACCESS LOGS
+* -------------------------
+* Stores access logs for the kubeconfig bucket for auditing purposes.
+* tfsec:ignore:aws-s3-enable-bucket-logging
+*/
+module "s3_access_logs_bucket" {
+  source = "./modules/s3"
+
+  s3_bucket_name = local.S3_ACCESS_LOGS_NAME
+  s3_kms_key_arn = aws_kms_key.s3_key.arn
+  s3_tags        = {}
+}
+
+resource "aws_s3_bucket_logging" "kubeconfig_logging" {
+  bucket        = module.s3_kubeconfig_bucket.s3_bucket_id
+  target_bucket = module.s3_access_logs_bucket.s3_bucket_id
+  target_prefix = "kubeconfig-logs/"
 }
 
 /*
 * ---------------------------------------
 * IAM POLICY FOR CONTROL PLANE SSM ACCESS
 * ---------------------------------------
-* Grants the Control Plane permission to write the cluster join command to SSM Parameter Store.
-* Enables automated distribution of the join token to worker nodes.
+* Grants the Control Plane permission to write the cluster join command to 
+* SSM Parameter Store. Enables automated distribution of the join token to worker nodes.
 */
 module "iam_policy_control_plane_ssm_write" {
   source = "./modules/iam/policies"
@@ -318,6 +394,15 @@ module "iam_policy_control_plane_s3_write" {
         Resource = [
           "${module.s3_kubeconfig_bucket.s3_bucket_arn}/*"
         ]
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "kms:Encrypt",
+          "kms:Decrypt",
+          "kms:GenerateDataKey"
+        ]
+        Resource = aws_kms_key.s3_key.arn
       }
     ]
   }
@@ -346,6 +431,13 @@ module "iam_policy_worker_node_ssm_read" {
         Effect   = "Allow"
         Action   = ["ssm:GetParameter"]
         Resource = module.ssm_parameter_cluster_join_command.ssm_parameter_arn
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "kms:Decrypt"
+        ]
+        Resource = aws_kms_key.s3_key.arn
       }
     ]
   }
