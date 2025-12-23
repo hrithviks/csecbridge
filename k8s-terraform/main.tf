@@ -14,6 +14,14 @@ data "aws_s3_bucket" "access_logs" {
   region = var.main_aws_region
 }
 
+data "aws_route_table" "devops_public" {
+  vpc_id = var.devops_vpc_id
+  filter {
+    name   = "tag:Name"
+    values = ["${var.main_project_prefix}-devops-public-rt"]
+  }
+}
+
 locals {
   RESOURCE_PREFIX = "${var.main_project_prefix}-${var.main_cluster_name}"
 
@@ -167,6 +175,12 @@ resource "aws_route" "peering_private" {
   count                     = length(var.network_private_subnets_cidr)
   route_table_id            = module.network.private_route_table_ids[count.index]
   destination_cidr_block    = var.devops_vpc_cidr
+  vpc_peering_connection_id = aws_vpc_peering_connection.devops_peering.id
+}
+
+resource "aws_route" "devops_peering_return" {
+  route_table_id            = data.aws_route_table.devops_public.id
+  destination_cidr_block    = var.network_vpc_cidr
   vpc_peering_connection_id = aws_vpc_peering_connection.devops_peering.id
 }
 
