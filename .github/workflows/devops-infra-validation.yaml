@@ -1,0 +1,71 @@
+# -----------------------------------------------------------------------------
+# Script  : .github/workflows/api-service.yaml
+# Purpose : This is a simple validation workflow to test the DevOps setup for
+#           cSecBridge project.
+# -----------------------------------------------------------------------------
+name: DevOps Infrastructure Validation Workflow
+
+# Always run on manual triggers only
+on: workflow_dispatch
+
+# Permissions required for OIDC authentication
+permissions:
+  id-token: write # Required to request the OIDC token
+  contents: read # Required for actions/checkout
+
+jobs:
+  # ---------------------
+  # JOB 1: Validate Infra
+  # ---------------------
+  validate-infra:
+    name: Validate AWS Connection
+    runs-on: self-hosted
+    environment: dev
+
+    # Use environment variable for the BUCKETNAME
+    env:
+      BUCKETNAME: csec-validation-${{ github.run_id }}
+      GH_USER: ${{ secrets.GH_USER }}
+
+    # Use the custom runner image
+    container:
+      image: ${{ vars.GH_RUNNER_IMAGE}}
+      credentials:
+        username: ${{ secrets.GH_USER }}
+        password: ${{ secrets.GH_TOKEN }}
+
+    steps:
+      # ----------------------
+      # Step 1 : Code Checkout
+      # ----------------------
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # ----------------------------------
+      # Step 2 : Configure AWS Credentials
+      # ----------------------------------
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ap-southeast-1
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/csec-devops-role-dev
+          role-skip-session-tagging: true
+
+      # ------------------------
+      # Step 3 : Verify Identity
+      # ------------------------
+      - name: Verify Identity
+        run: |
+          echo "Verifying assumed identity..."
+          aws sts get-caller-identity
+
+      # ----------------------------------------------------------------------------------
+      # Step 4 : Create a simple S3 bucket (Permissions explicity granted for this action)
+      # ----------------------------------------------------------------------------------
+      - name: Create Test S3 Bucket
+        run: |
+          echo "Attempting to create bucket: $BUCKETNAME"
+          aws s3 mb s3://$BUCKETNAME
+
+          # Clean up (if creation succeeded)
+          aws s3 rb s3://$BUCKETNAME
