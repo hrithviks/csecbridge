@@ -8,10 +8,46 @@
  */
 
 locals {
-  resource_prefix = "${var.main_project_prefix}-${var.main_cluster_name}"
+  RESOURCE_PREFIX = "${var.main_project_prefix}-${var.main_cluster_name}"
+
+  # Resource Names
+  CP_SG_NAME                   = "${local.RESOURCE_PREFIX}-control-plane-sg"
+  WORKER_SG_NAME               = "${local.RESOURCE_PREFIX}-worker-nodes-sg"
+  IAM_ROLE_CP_NAME             = "${local.RESOURCE_PREFIX}-control-plane-role"
+  IAM_PROFILE_CP_NAME          = "${local.RESOURCE_PREFIX}-control-plane-profile"
+  IAM_ROLE_WN_NAME             = "${local.RESOURCE_PREFIX}-worker-nodes-role"
+  IAM_PROFILE_WN_NAME          = "${local.RESOURCE_PREFIX}-worker-nodes-profile"
+  SSM_PARAM_JOIN_CMD_NAME      = "/${local.RESOURCE_PREFIX}/k8s/join-command"
+  S3_KUBECONFIG_NAME           = "${local.RESOURCE_PREFIX}-k8s-config"
+  IAM_POLICY_CP_SSM_WRITE_NAME = "${local.RESOURCE_PREFIX}-cp-ssm-write-policy"
+  IAM_POLICY_CP_S3_WRITE_NAME  = "${local.RESOURCE_PREFIX}-cp-s3-write-policy"
+  IAM_POLICY_WN_SSM_READ_NAME  = "${local.RESOURCE_PREFIX}-wn-ssm-read-policy"
+  NLB_CP_NAME                  = "${local.RESOURCE_PREFIX}-control-plane-nlb"
+  NLB_TG_CP_NAME               = "${local.RESOURCE_PREFIX}-control-plane-tg"
+  EC2_CP_NAME_PREFIX           = "${local.RESOURCE_PREFIX}-control-plane"
+  EC2_WN_NAME_PREFIX           = "${local.RESOURCE_PREFIX}-worker-node"
+
+  # Resource Descriptions
+  CP_SG_DESC                   = "Security Group for Control Plane instances"
+  CP_SG_SSH_INGRESS            = "Allow SSH ingress traffic to Control Plane"
+  CP_SG_API_INGRESS            = "Allow Kubernetes API ingress traffic to Control Plane"
+  CP_SG_K8S_API_EGRESS         = "Allow Kubernetes API egress traffic from Control Plane to Worker Nodes"
+  CP_SG_K8S_SSH_EGRESS         = "Allow SSH egress traffic from Control Plane to Worker Nodes"
+  CP_SG_INTERNET_ACCESS        = "Allow unrestricted internet egress from Control Plane"
+  WORKER_SG_DESC               = "Security Group for Worker Node instances"
+  WORKER_SG_K8S_API_INGRESS    = "Allow Kubelet API ingress traffic from Control Plane to Worker Nodes"
+  WORKER_SG_K8S_SSH_INGRESS    = "Allow SSH ingress traffic from Control Plane to Worker Nodes"
+  WORKER_SG_INTERNET_ACCESS    = "Allow unrestricted internet egress from Worker Nodes"
+  IAM_ROLE_CP_DESC             = "IAM Role for Control Plane instances"
+  IAM_ROLE_WN_DESC             = "IAM Role for Worker Node instances"
+  SSM_PARAM_JOIN_CMD_DESC      = "Stores the kubeadm join command required for worker nodes to join the cluster"
+  IAM_POLICY_CP_SSM_WRITE_DESC = "Policy granting Control Plane write access to SSM Parameter Store"
+  IAM_POLICY_CP_S3_WRITE_DESC  = "Policy granting Control Plane write access to Kubeconfig S3 Bucket"
+  IAM_POLICY_WN_SSM_READ_DESC  = "Policy granting Worker Nodes read access to SSM Parameter Store"
 }
 
 /*
+* -----------------
 * NETWORK RESOURCES
 * -----------------
 * Provisions the Virtual Private Cloud (VPC), subnets, and networking gateways.
@@ -20,7 +56,7 @@ locals {
 */
 module "network" {
   source                   = "./modules/network"
-  vpc_resource_prefix      = local.resource_prefix
+  vpc_resource_prefix      = local.RESOURCE_PREFIX
   vpc_cidr                 = var.network_vpc_cidr
   vpc_public_subnets_cidr  = var.network_public_subnets_cidr
   vpc_private_subnets_cidr = var.network_private_subnets_cidr
@@ -28,6 +64,7 @@ module "network" {
 }
 
 /*
+* --------------------------------
 * SECURITY GROUP FOR CONTROL PLANE
 * --------------------------------
 * Defines the network security boundary for Control Plane instances.
@@ -36,13 +73,14 @@ module "network" {
 */
 module "control_plane_security" {
   source         = "./modules/security"
-  sg_name        = "${local.resource_prefix}-control-plane-sg"
-  sg_description = "Security group for the control plane"
+  sg_name        = local.CP_SG_NAME
+  sg_description = local.CP_SG_DESC
   sg_vpc_id      = module.network.vpc_id
   sg_tags        = {}
 }
 
 /*
+* -------------------------------
 * SECURITY GROUP FOR WORKER NODES
 * -------------------------------
 * Defines the network security boundary for Worker Node instances.
@@ -51,13 +89,14 @@ module "control_plane_security" {
 */
 module "worker_node_security" {
   source         = "./modules/security"
-  sg_name        = "${local.resource_prefix}-worker-nodes-sg"
-  sg_description = "Security group for the worker nodes"
+  sg_name        = local.WORKER_SG_NAME
+  sg_description = local.WORKER_SG_DESC
   sg_vpc_id      = module.network.vpc_id
   sg_tags        = {}
 }
 
 /*
+* --------------------------------------
 * SECURITY GROUP RULES FOR CONTROL PLANE
 * --------------------------------------
 * Rule 1: Ingress to control plane allowing SSH traffic.
@@ -66,6 +105,7 @@ module "worker_node_security" {
 */
 resource "aws_vpc_security_group_ingress_rule" "cp_ssh_ingress" {
   security_group_id = module.control_plane_security.sg_id
+  description       = local.CP_SG_SSH_INGRESS
   cidr_ipv4         = "0.0.0.0/0"
   from_port         = 22
   ip_protocol       = "tcp"
@@ -74,6 +114,7 @@ resource "aws_vpc_security_group_ingress_rule" "cp_ssh_ingress" {
 
 resource "aws_vpc_security_group_ingress_rule" "cp_api_ingress" {
   security_group_id = module.control_plane_security.sg_id
+  description       = local.CP_SG_API_INGRESS
   cidr_ipv4         = "0.0.0.0/0"
   from_port         = 6443
   ip_protocol       = "tcp"
@@ -82,6 +123,7 @@ resource "aws_vpc_security_group_ingress_rule" "cp_api_ingress" {
 
 resource "aws_vpc_security_group_egress_rule" "cp_to_worker_k8s" {
   security_group_id            = module.control_plane_security.sg_id
+  description                  = local.CP_SG_K8S_API_EGRESS
   referenced_security_group_id = module.worker_node_security.sg_id
   from_port                    = 10250
   ip_protocol                  = "tcp"
@@ -90,6 +132,7 @@ resource "aws_vpc_security_group_egress_rule" "cp_to_worker_k8s" {
 
 resource "aws_vpc_security_group_egress_rule" "cp_to_worker_ssh" {
   security_group_id            = module.control_plane_security.sg_id
+  description                  = local.CP_SG_K8S_SSH_EGRESS
   referenced_security_group_id = module.worker_node_security.sg_id
   from_port                    = 22
   ip_protocol                  = "tcp"
@@ -97,22 +140,36 @@ resource "aws_vpc_security_group_egress_rule" "cp_to_worker_ssh" {
 }
 
 /*
+* -------------------------------------
 * SECURITY GROUP RULES FOR WORKER NODES
 * -------------------------------------
-* Rule 1: Ingress to worker node from control plane (SSH & Kubelet)
+* Rule 1: Ingress to worker node from control plane for SSH
+* Rule 1: Ingress to worker node from control plane for Kubelet port (10250)
 * NOTE:
 * All outbound traffic from control plane is allowed (No private connections).
 * Additional egress rules to be configured to allow private connections based 
 * on security revamp.
 */
-resource "aws_vpc_security_group_ingress_rule" "worker_from_cp_all" {
+resource "aws_vpc_security_group_ingress_rule" "worker_from_cp_ssh" {
   security_group_id            = module.worker_node_security.sg_id
+  description                  = local.WORKER_SG_K8S_SSH_INGRESS
   referenced_security_group_id = module.control_plane_security.sg_id
-  ip_protocol                  = "-1"
-  description                  = "Allow all traffic from Control Plane (includes SSH and Kubelet)"
+  from_port                    = 10250
+  ip_protocol                  = "tcp"
+  to_port                      = 10250
+}
+
+resource "aws_vpc_security_group_ingress_rule" "worker_from_cp_api" {
+  security_group_id            = module.worker_node_security.sg_id
+  description                  = local.WORKER_SG_K8S_API_INGRESS
+  referenced_security_group_id = module.control_plane_security.sg_id
+  from_port                    = 22
+  ip_protocol                  = "tcp"
+  to_port                      = 22
 }
 
 /*
+* ----------------------------------------
 * SECURITY GROUP RULES FOR INTERNET ACCESS
 * ----------------------------------------
 * Essential for package installation, image pulling, and connectivity checks (ping).
@@ -121,17 +178,20 @@ resource "aws_vpc_security_group_ingress_rule" "worker_from_cp_all" {
 */
 resource "aws_vpc_security_group_egress_rule" "cp_internet_access" {
   security_group_id = module.control_plane_security.sg_id
+  description       = local.CP_SG_INTERNET_ACCESS
   cidr_ipv4         = "0.0.0.0/0"
   ip_protocol       = "-1"
 }
 
 resource "aws_vpc_security_group_egress_rule" "worker_internet_access" {
   security_group_id = module.worker_node_security.sg_id
+  description       = local.WORKER_SG_INTERNET_ACCESS
   cidr_ipv4         = "0.0.0.0/0"
   ip_protocol       = "-1"
 }
 
 /*
+* ---------------------------------------------------------
 * IAM ROLE AND INSTANCE PROFILE FOR CONTROL PLANE INSTANCES
 * ---------------------------------------------------------
 * Configures the IAM identity and permissions for Control Plane instances.
@@ -140,17 +200,18 @@ resource "aws_vpc_security_group_egress_rule" "worker_internet_access" {
 */
 module "iam_role_control_plane" {
   source                      = "./modules/iam/roles"
-  iam_role_name               = "${local.resource_prefix}-control-plane-role"
-  iam_role_description        = "IAM role for the control plane instances"
+  iam_role_name               = local.IAM_ROLE_CP_NAME
+  iam_role_description        = local.IAM_ROLE_CP_DESC
   iam_role_assume_role_policy = var.compute_control_plane_iam_role_policy
 }
 
 resource "aws_iam_instance_profile" "iam_instance_profile_cp" {
-  name = "${local.resource_prefix}-control-plane-profile"
+  name = local.IAM_PROFILE_CP_NAME
   role = module.iam_role_control_plane.iam_role_name
 }
 
 /*
+* ----------------------------------
 * IAM ROLE FOR WORKER NODE INSTANCES
 * ----------------------------------
 * Configures the IAM identity and permissions for Worker Node instances.
@@ -159,17 +220,18 @@ resource "aws_iam_instance_profile" "iam_instance_profile_cp" {
 */
 module "iam_role_worker_nodes" {
   source                      = "./modules/iam/roles"
-  iam_role_name               = "${local.resource_prefix}-worker-nodes-role"
-  iam_role_description        = "IAM role for the worker nodes instances"
+  iam_role_name               = local.IAM_ROLE_WN_NAME
+  iam_role_description        = local.IAM_ROLE_WN_DESC
   iam_role_assume_role_policy = var.compute_worker_nodes_iam_role_policy
 }
 
 resource "aws_iam_instance_profile" "iam_instance_profile_wn" {
-  name = "${local.resource_prefix}-worker-nodes-profile"
+  name = local.IAM_PROFILE_WN_NAME
   role = module.iam_role_worker_nodes.iam_role_name
 }
 
 /*
+* --------------------------------------
 * SSM PARAMETER FOR CLUSTER JOIN COMMAND
 * --------------------------------------
 * Creates a SecureString parameter in AWS Systems Manager Parameter Store.
@@ -184,13 +246,14 @@ module "ssm_parameter_cluster_join_command" {
   source = "./modules/systems-manager"
 
   # SSM Parameter Config
-  ssm_parameter_name        = "/${local.resource_prefix}/k8s/join-command"
-  ssm_parameter_description = "Stores the kubeadm join command required for worker nodes to join the cluster."
+  ssm_parameter_name        = local.SSM_PARAM_JOIN_CMD_NAME
+  ssm_parameter_description = local.SSM_PARAM_JOIN_CMD_DESC
   ssm_parameter_type        = "SecureString"
   ssm_parameter_value       = "NOT_READY"
 }
 
 /*
+* ------------------------
 * S3 BUCKET FOR KUBECONFIG
 * ------------------------
 * Stores the admin kubeconfig file securely using server-side encryption.
@@ -199,11 +262,12 @@ module "ssm_parameter_cluster_join_command" {
 module "s3_kubeconfig_bucket" {
   source = "./modules/s3"
 
-  s3_bucket_name = "${local.resource_prefix}-k8s-config"
+  s3_bucket_name = local.S3_KUBECONFIG_NAME
   s3_tags        = {}
 }
 
 /*
+* ---------------------------------------
 * IAM POLICY FOR CONTROL PLANE SSM ACCESS
 * ---------------------------------------
 * Grants the Control Plane permission to write the cluster join command to SSM Parameter Store.
@@ -213,8 +277,8 @@ module "iam_policy_control_plane_ssm_write" {
   source = "./modules/iam/policies"
 
   # Policy Config
-  iam_policy_name        = "${local.resource_prefix}-cp-ssm-write-policy"
-  iam_policy_description = "Policy to grant write access for the Control Plane to the SSM Parameter Store"
+  iam_policy_name        = local.IAM_POLICY_CP_SSM_WRITE_NAME
+  iam_policy_description = local.IAM_POLICY_CP_SSM_WRITE_DESC
   iam_policy_document = {
     Version = "2012-10-17"
     Statement = [
@@ -233,6 +297,7 @@ module "iam_policy_control_plane_ssm_write" {
 }
 
 /*
+* --------------------------------------
 * IAM POLICY FOR CONTROL PLANE S3 ACCESS
 * --------------------------------------
 * Grants the Control Plane permission to write the kubeconfig file to the secure S3 bucket.
@@ -242,8 +307,8 @@ module "iam_policy_control_plane_s3_write" {
   source = "./modules/iam/policies"
 
   # Policy Config
-  iam_policy_name        = "${local.resource_prefix}-cp-s3-write-policy"
-  iam_policy_description = "Policy to grant write access for the Control Plane to the Kubeconfig S3 Bucket"
+  iam_policy_name        = local.IAM_POLICY_CP_S3_WRITE_NAME
+  iam_policy_description = local.IAM_POLICY_CP_S3_WRITE_DESC
   iam_policy_document = {
     Version = "2012-10-17"
     Statement = [
@@ -262,6 +327,7 @@ module "iam_policy_control_plane_s3_write" {
 }
 
 /*
+* -------------------------------------
 * IAM POLICY FOR WORKER NODE SSM ACCESS
 * -------------------------------------
 * Grants Worker Nodes permission to read the cluster join command from SSM Parameter Store.
@@ -271,8 +337,8 @@ module "iam_policy_worker_node_ssm_read" {
   source = "./modules/iam/policies"
 
   # Policy Config
-  iam_policy_name        = "${local.resource_prefix}-wn-ssm-read-policy"
-  iam_policy_description = "Policy to grant read access for the Worker Nodes to the SSM Parameter Store"
+  iam_policy_name        = local.IAM_POLICY_WN_SSM_READ_NAME
+  iam_policy_description = local.IAM_POLICY_WN_SSM_READ_DESC
   iam_policy_document = {
     Version = "2012-10-17"
     Statement = [
@@ -289,6 +355,7 @@ module "iam_policy_worker_node_ssm_read" {
 }
 
 /*
+* ---------------------------------
 * CONTROL PLANE LOAD BALANCER (NLB)
 * ---------------------------------
 * Provides a stable Network Load Balancer endpoint for the Kubernetes API Server.
@@ -299,13 +366,13 @@ module "control_plane_lb" {
   source = "./modules/load-balancer/nlb"
 
   # NLB Config
-  nlb_name               = "${local.resource_prefix}-control-plane-nlb"
+  nlb_name               = local.NLB_CP_NAME
   nlb_internal_enabled   = false
   nlb_cross_zone_enabled = true
   nlb_subnet_ids         = module.network.public_subnet_ids
 
   # NLB Target Group Config
-  nlb_target_group_name = "${local.resource_prefix}-control-plane-tg"
+  nlb_target_group_name = local.NLB_TG_CP_NAME
   nlb_target_port       = 6443
   nlb_target_protocol   = "TCP"
   nlb_target_vpc_id     = module.network.vpc_id
@@ -321,6 +388,7 @@ module "control_plane_lb" {
 }
 
 /*
+* ----------------------------------
 * KUBERNETES CONTROL PLANE RESOURCES
 * ----------------------------------
 * Provisions the Control Plane infrastructure using Auto Scaling Groups and Launch Templates.
@@ -331,10 +399,10 @@ module "k8s_control_plane" {
   source = "./modules/compute"
 
   # Basic config
-  ec2_name_prefix   = "${local.resource_prefix}-control-plane"
-  ec2_ami_id        = var.compute_control_plane_ami_id
-  ec2_instance_type = var.compute_control_plane_instance_type
-  ec2_key_name      = var.compute_control_plane_key_name
+  ec2_name_prefix   = local.EC2_CP_NAME_PREFIX
+  ec2_ami_id        = var.compute_k8s_instance_ami_id
+  ec2_instance_type = var.compute_k8s_instance_type
+  ec2_key_name      = var.compute_k8s_instance_ssh_key_name
 
   # Network config
   ec2_subnet_ids                  = module.network.public_subnet_ids
@@ -372,6 +440,7 @@ module "k8s_control_plane" {
 }
 
 /*
+* ---------------------------------
 * KUBERNETES WORKER NODES RESOURCES
 * ---------------------------------
 * Provisions Worker Node infrastructure using Auto Scaling Groups.
@@ -382,10 +451,10 @@ module "k8s_worker_nodes" {
   source = "./modules/compute"
 
   # Basic config
-  ec2_name_prefix   = "${local.resource_prefix}-worker-node"
-  ec2_ami_id        = var.compute_worker_nodes_ami_id
-  ec2_instance_type = var.compute_worker_nodes_instance_type
-  ec2_key_name      = var.compute_worker_nodes_key_name
+  ec2_name_prefix   = local.EC2_WN_NAME_PREFIX
+  ec2_ami_id        = var.compute_k8s_instance_ami_id
+  ec2_instance_type = var.compute_k8s_instance_type
+  ec2_key_name      = var.compute_k8s_instance_ssh_key_name
 
   # Network config
   ec2_subnet_ids                  = module.network.private_subnet_ids
