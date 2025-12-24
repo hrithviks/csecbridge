@@ -30,52 +30,12 @@ locals {
   # Resource Descriptions
   SG_DESC = "Security group for DevOps runner instances"
 
-  # IAM allowed actions for "apply" and "destroy"
-  IAM_WRITE_ACTIONS = [
-    "ec2:*",
-    "elasticloadbalancing:*",
-    "autoscaling:*",
-    "iam:*",
-    "s3:*",
-    "ssm:*",
-    "logs:*",
-    "cloudwatch:*",
-    "kms:*"
-  ]
+  # Runner User Data
+  GITHUB_AGENT_VERSION = "2.330.0"
+  RUNNER_USER_DATA     = "devops-agent-user-data.sh"
 
-  # IAM allowed actions for state refresh
-  IAM_READ_ACTIONS = [
-    "ec2:*",
-    "elasticloadbalancing:*",
-    "autoscaling:*",
-    "iam:*",
-    "s3:*",
-    "ssm:*",
-    "logs:*",
-    "cloudwatch:*",
-    "kms:*"
-  ]
-
-  # IAM allowed resources for "apply" and "destroy"
-  IAM_ALLOWED_RESOURCES = [
-    # Region-specific resources in this account (EC2, ELB, ASG, SSM, Logs)
-    "arn:aws:ec2:${local.REGION}:${local.ACCOUNT_ID}:*",
-    "arn:aws:elasticloadbalancing:${local.REGION}:${local.ACCOUNT_ID}:*",
-    "arn:aws:autoscaling:${local.REGION}:${local.ACCOUNT_ID}:*",
-    "arn:aws:ssm:${local.REGION}:${local.ACCOUNT_ID}:*",
-    "arn:aws:logs:${local.REGION}:${local.ACCOUNT_ID}:*",
-    "arn:aws:cloudwatch:${local.REGION}:${local.ACCOUNT_ID}:*",
-    "arn:aws:kms:${local.REGION}:${local.ACCOUNT_ID}:*",
-    # Allow using public AMIs (owned by other accounts)
-    "arn:aws:ec2:${local.REGION}::image/*",
-    # IAM Resources (Enforce naming prefix)
-    "arn:aws:iam::${local.ACCOUNT_ID}:role/${local.PROJECT_PREFIX}-*",
-    "arn:aws:iam::${local.ACCOUNT_ID}:policy/${local.PROJECT_PREFIX}-*",
-    "arn:aws:iam::${local.ACCOUNT_ID}:instance-profile/${local.PROJECT_PREFIX}-*",
-    # S3 Buckets (Enforce naming prefix)
-    "arn:aws:s3:::${local.PROJECT_PREFIX}-*",
-    "arn:aws:s3:::${local.PROJECT_PREFIX}-*/*"
-  ]
+  # IAM
+  DEVOPS_POLICY_TEMPLATE = "devops-role-policy.json"
 }
 
 /*
@@ -211,31 +171,13 @@ resource "aws_instance" "devops_runner" {
 
   user_data_replace_on_change = true
 
-  # Install Docker and Git as prerequisites for the runner
-  user_data = <<-EOF
-              #!/bin/bash
-              apt-get update -y
-              apt-get install -y docker.io git curl jq libdigest-sha-perl
-
-              echo "Enabling Docker..."
-              systemctl enable docker
-              systemctl start docker
-              usermod -a -G docker ubuntu
-              chmod 666 /var/run/docker.sock
-
-              echo "Registering GitHub Actions runner..."
-              mkdir /home/ubuntu/actions-runner && cd /home/ubuntu/actions-runner
-              LATEST_VERSION=$(curl -s https://api.github.com/repos/actions/runner/releases/latest | jq -r .tag_name | sed 's/v//')
-              [ -z "$LATEST_VERSION" ] || [ "$LATEST_VERSION" = "null" ] && LATEST_VERSION="2.312.0"
-              curl -o actions-runner-linux-x64-$${LATEST_VERSION}.tar.gz -L https://github.com/actions/runner/releases/download/v$${LATEST_VERSION}/actions-runner-linux-x64-$${LATEST_VERSION}.tar.gz
-              tar xzf ./actions-runner-linux-x64-$${LATEST_VERSION}.tar.gz
-              ./bin/installdependencies.sh
-
-              chown -R ubuntu:ubuntu /home/ubuntu/actions-runner
-              su - ubuntu -c "cd /home/ubuntu/actions-runner && ./config.sh --url https://github.com/${var.github_repository} --token ${var.github_runner_token} --unattended --name ${local.RUNNER_NAME} --labels csec-self-hosted"
-              ./svc.sh install ubuntu
-              ./svc.sh start
-              EOF
+  # Inject user data from the template file
+  user_data = templatefile(local.RUNNER_USER_DATA, {
+    github_agent_version = local.GITHUB_AGENT_VERSION
+    github_repository    = var.github_repository
+    github_runner_token  = var.github_runner_token
+    runner_name          = local.RUNNER_NAME
+  })
 
   tags = {
     Name = local.RUNNER_NAME
@@ -285,66 +227,13 @@ resource "aws_iam_role_policy" "environment_policies" {
   name = "${local.POLICY_NAME_PREFIX}-${each.key}"
   role = aws_iam_role.environment_roles[each.key].id
 
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      # Permission to create/destroy/update managed resources.
-      {
-        Effect   = "Allow"
-        Action   = local.IAM_WRITE_ACTIONS
-        Resource = local.IAM_ALLOWED_RESOURCES
-        Condition = {
-          StringEqualsIfExists = {
-            "aws:ResourceTag/environment" = each.key
-          }
-        }
-      },
-      # Permission to create test S3 bucket for validation
-      {
-        Effect = "Allow"
-        Action = [
-          "s3:CreateBucket",
-          "s3:DeleteBucket"
-        ]
-        Resource = "arn:aws:s3:::${local.PROJECT_PREFIX}-*"
-        Condition = {
-          Null = {
-            "aws:ResourceTag/environment" = "true"
-          }
-        }
-      },
-      # Permission to get the tfvars file for each environment.
-      {
-        Effect = "Allow"
-        Action = [
-          "s3:GetObject"
-        ]
-        Resource = "arn:aws:s3:::csec-app-infra-backend/k8s-cluster-config/${each.key}.tfvars"
-      },
-      # Permission to create and update state file and lock files.
-      {
-        Effect = "Allow"
-        Action = [
-          "s3:GetObject",
-          "s3:PutObject",
-          "s3:DeleteObject"
-        ]
-        Resource = "arn:aws:s3:::csec-app-infra-backend/k8s-cluster/csec-${each.key}.tfstate*"
-      },
-      # Explicit permission to list the bucket contents.
-      {
-        Effect = "Allow"
-        Action = [
-          "s3:ListBucket"
-        ]
-        Resource = "arn:aws:s3:::csec-app-infra-backend"
-      },
-      # Permission to capture the state of all managed resources.
-      {
-        Effect   = "Allow"
-        Action   = local.IAM_READ_ACTIONS
-        Resource = "*"
-      }
-    ]
+  policy = templatefile(local.DEVOPS_POLICY_TEMPLATE, {
+    region         = local.REGION
+    account_id     = local.ACCOUNT_ID
+    environment    = each.key
+    backend_bucket = "csec-app-infra-backend"
+    access_bucket  = "csec-app-access-logs"
+    configbucket   = "csec-${each.key}-k8s-config"
+    project_prefix = local.PROJECT_PREFIX
   })
 }
