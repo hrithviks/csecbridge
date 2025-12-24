@@ -1,0 +1,133 @@
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Sid": "DiscoveryAndStateRefresh",
+            "Effect": "Allow",
+            "Action": [
+                "ec2:Describe*",
+                "autoscaling:Describe*",
+                "elasticloadbalancing:Describe*",
+                "iam:Get*",
+                "iam:List*",
+                "kms:DescribeKey",
+                "kms:List*",
+                "s3:GetBucket*",
+                "s3:ListAllMyBuckets",
+                "s3:ListBucket",
+                "ssm:DescribeParameters",
+                "ssm:GetParameter*",
+                "logs:Describe*",
+                "logs:GetLogEvents",
+                "sts:GetCallerIdentity"
+            ],
+            "Resource": "*"
+        },
+        {
+            "Sid": "IAMLifecycleManagement",
+            "Effect": "Allow",
+            "Action": [
+                "iam:CreateRole",
+                "iam:CreatePolicy",
+                "iam:CreateInstanceProfile",
+                "iam:TagRole",
+                "iam:TagPolicy",
+                "iam:TagInstanceProfile",
+                "iam:DeleteRole",
+                "iam:DeletePolicy",
+                "iam:DeleteInstanceProfile",
+                "iam:AttachRolePolicy",
+                "iam:DetachRolePolicy",
+                "iam:PutRolePolicy",
+                "iam:DeleteRolePolicy",
+                "iam:AddRoleToInstanceProfile",
+                "iam:RemoveRoleFromInstanceProfile",
+                "iam:PassRole"
+            ],
+            "Resource": [
+                "arn:aws:iam::${account_id}:role/csec-${environment}-*",
+                "arn:aws:iam::${account_id}:policy/csec-${environment}-*",
+                "arn:aws:iam::${account_id}:instance-profile/csec-${environment}-*"
+            ],
+            "Condition": {
+                "StringEquals": {
+                    "aws:ResourceTag/project": "csec-bridge"
+                }
+            }
+        },
+        {
+            "Sid": "NetworkingComputeAndLB",
+            "Effect": "Allow",
+            "Action": [
+                "ec2:Create*",
+                "ec2:Modify*",
+                "ec2:AuthorizeSecurityGroup*",
+                "ec2:RevokeSecurityGroup*",
+                "ec2:DeleteRoute",
+                "ec2:AssociateRouteTable",
+                "ec2:AllocateAddress",
+                "ec2:ReleaseAddress",
+                "autoscaling:Create*",
+                "autoscaling:Update*",
+                "autoscaling:Delete*",
+                "elasticloadbalancing:Create*",
+                "elasticloadbalancing:Modify*",
+                "elasticloadbalancing:Delete*"
+            ],
+            "Resource": "*",
+            "Condition": {
+                "StringEquals": {
+                    "aws:ResourceTag/project": "csec-bridge",
+                    "aws:ResourceTag/environment": "${environment}"
+                }
+            }
+        },
+        {
+            "Sid": "S3LoggingAndSecrets",
+            "Effect": "Allow",
+            "Action": [
+                "s3:CreateBucket",
+                "s3:PutBucket*",
+                "s3:PutEncryptionConfiguration",
+                "logs:CreateLogGroup",
+                "logs:PutRetentionPolicy",
+                "kms:Create*",
+                "kms:PutKeyPolicy",
+                "kms:TagResource",
+                "ssm:PutParameter",
+                "ssm:AddTagsToResource",
+                "ssm:DeleteParameter"
+            ],
+            "Resource": [
+                "arn:aws:s3:::csec-${environment}-k8s-config",
+                "arn:aws:s3:::csec-app-access-logs",
+                "arn:aws:logs:${region}:${account_id}:log-group:/aws/vpc-flow-log/*",
+                "arn:aws:kms:${region}:${account_id}:key/*",
+                "arn:aws:kms:${region}:${account_id}:alias/*",
+                "arn:aws:ssm:${region}:${account_id}:parameter/csec-${environment}/*"
+            ]
+        },
+        {
+            "Sid": "ExplicitDenySensitiveActionsOnProd",
+            "Effect": "Deny",
+            "Action": [
+                "ec2:DeleteVpc",
+                "ec2:DeleteSubnet",
+                "ec2:DeleteInternetGateway",
+                "ec2:DeleteVpcPeeringConnection",
+                "s3:DeleteBucket",
+                "kms:ScheduleKeyDeletion",
+                "kms:DisableKey",
+                "iam:DeleteRole",
+                "iam:DeletePolicy"
+            ],
+            "Resource": "*",
+            "Condition": {
+                "StringEquals": {
+                    "aws:ResourceTag/environment": "prod",
+                    "aws:ResourceTag/project": "csec-bridge"
+                }
+            }
+        }
+    ]
+}
