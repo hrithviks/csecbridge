@@ -17,6 +17,7 @@ ARG KUBECTL_VERSION="v1.34.0"
 ARG TFLINT_VERSION="v0.50.3"
 ARG TRIVY_VERSION="0.50.1"
 ARG TFSEC_VERSION="v1.28.6"
+ARG KUBECONFORM_VERSION="v0.6.4"
 
 # Install build dependencies
 RUN apt-get update && apt-get install -y curl unzip
@@ -51,6 +52,11 @@ RUN curl -LO "https://github.com/aquasecurity/tfsec/releases/download/${TFSEC_VE
     chmod +x tfsec-linux-amd64 && \
     mv tfsec-linux-amd64 /usr/local/bin/tfsec
 
+# Install Kubeconform
+RUN curl -LO "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" && \
+    tar xzf "kubeconform-linux-amd64.tar.gz" && \
+    mv kubeconform /usr/local/bin/
+
 # --------------------
 # Stage 2: Final Image
 # --------------------
@@ -80,6 +86,7 @@ COPY --from=builder /usr/local/aws-cli /usr/local/aws-cli
 COPY --from=builder /usr/local/bin/tflint /usr/local/bin/tflint
 COPY --from=builder /usr/local/bin/trivy /usr/local/bin/trivy
 COPY --from=builder /usr/local/bin/tfsec /usr/local/bin/tfsec
+COPY --from=builder /usr/local/bin/kubeconform /usr/local/bin/kubeconform
 COPY --from=builder /aws-cli-bin/ /usr/local/bin/
 
 # Verify installations
@@ -88,7 +95,8 @@ RUN terraform --version && \
     aws --version && \
     tflint --version && \
     trivy --version && \
-    tfsec --version
+    tfsec --version && \
+    kubeconform -v
 
 # Set default entrypoint
 CMD ["/bin/bash"]
