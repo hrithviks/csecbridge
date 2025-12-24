@@ -1,5 +1,5 @@
 # -----------------------------------------------------------------------------
-# Script  : .github/workflows/api-service.yaml
+# Script  : .github/workflows/csec-devops-infra-validation.yaml
 # Purpose : This is a simple validation workflow to test the DevOps setup for
 #           cSecBridge project.
 # -----------------------------------------------------------------------------
@@ -35,13 +35,13 @@ jobs:
 
     steps:
       # ----------------------
-      # Step 1 : Code Checkout
+      # Step 1: Code Checkout
       # ----------------------
       - name: Checkout Code
         uses: actions/checkout@v4
 
       # ----------------------------------
-      # Step 2 : Configure AWS Credentials
+      # Step 2: Configure AWS Credentials
       # ----------------------------------
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -51,7 +51,7 @@ jobs:
           role-skip-session-tagging: true
 
       # ------------------------
-      # Step 3 : Verify Identity
+      # Step 3: Verify Identity
       # ------------------------
       - name: Verify Identity
         run: |
@@ -59,7 +59,7 @@ jobs:
           aws sts get-caller-identity
 
       # ----------------------------------------------------------------------------------
-      # Step 4 : Create a simple S3 bucket (Permissions explicity granted for this action)
+      # Step 4: Create a simple S3 bucket (Permissions explicity granted for this action)
       # ----------------------------------------------------------------------------------
       - name: Create Test S3 Bucket
         run: |

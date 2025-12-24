@@ -1,0 +1,236 @@
+# -----------------------------------------------------------------------------
+# Script  : .github/workflows/csec-k8s-infra-deployment.yaml
+# Purpose : Workflow to build and deploy Terraform configuration for K8s infra.
+# -----------------------------------------------------------------------------
+name: C-Sec | Deployment | Kubernetes Infrastructure
+
+# Trigger on manual dispatch
+on: workflow_dispatch
+#  push:
+#    branches:
+#      - main
+#      - dev
+#    paths:
+#      - "k8s-terraform/**"
+
+# Permissions required for OIDC authentication
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  TF_WORKING_DIR: k8s-terraform
+
+jobs:
+  # -----------------------------------------------------
+  # JOB 1: Validation (Linting, Formatting, Code Quality)
+  # -----------------------------------------------------
+  # This job performs static code analysis to ensure the Terraform code
+  # adheres to formatting standards and is syntactically valid.
+  validate:
+    name: Terraform Validation
+    runs-on: csec-self-hosted
+    environment: dev
+
+    container:
+      image: ${{ vars.GH_RUNNER_IMAGE }}
+      credentials:
+        username: ${{ secrets.GH_USER }}
+        password: ${{ secrets.GH_TOKEN }}
+
+    steps:
+      # ----------------------
+      # Step 1: Code Checkout
+      # ----------------------
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # -----------------------
+      # Step 2: Cache Providers
+      # -----------------------
+      - name: Cache Terraform Providers
+        uses: ./.github/actions/k8s-cluster/terraform-cache
+        with:
+          lock_file: k8s-terraform/.terraform.lock.hcl
+
+      # -----------------------------
+      # Step 3: Check Code Formatting
+      # -----------------------------
+      - name: Terraform Format Check
+        run: terraform fmt -check -recursive
+        working-directory: ${{ env.TF_WORKING_DIR }}
+
+      # --------------------------------
+      # Step 4: Initialize (Backendless)
+      # --------------------------------
+      - name: Terraform Init (Backendless)
+        run: terraform init -backend=false
+        working-directory: ${{ env.TF_WORKING_DIR }}
+
+      # -----------------------
+      # Step 5: Validate Config
+      # -----------------------
+      - name: Terraform Validate
+        run: terraform validate
+        working-directory: ${{ env.TF_WORKING_DIR }}
+
+  # -------------------------------------------------
+  # JOB 2: SAST (Static Application Security Testing)
+  # -------------------------------------------------
+  # This job runs security scans using TFLint, Trivy, and tfsec to identify
+  # potential vulnerabilities and misconfigurations in the infrastructure code.
+  sast:
+    name: Infrastructure SAST
+    runs-on: csec-self-hosted
+    environment: dev
+
+    container:
+      image: ${{ vars.GH_RUNNER_IMAGE }}
+      credentials:
+        username: ${{ secrets.GH_USER }}
+        password: ${{ secrets.GH_TOKEN }}
+
+    steps:
+      # ---------------------
+      # Step 1: Code Checkout
+      # ---------------------
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # ------------------
+      # Step 2: Run TFLint
+      # ------------------
+      # Performs linting to detect errors that terraform validate misses,
+      # including deprecated syntax, unused declarations, and invalid
+      # resource configurations for the target cloud provider.
+      - name: Run TFLint
+        run: |
+          tflint --init
+          tflint
+        working-directory: ${{ env.TF_WORKING_DIR }}
+
+      # -------------------------------
+      # Step 3: Run Trivy Security Scan
+      # -------------------------------
+      # Scans the Terraform configuration for security vulnerabilities and
+      # misconfigurations. This step enforces security gates by failing
+      # on CRITICAL or HIGH severity findings.
+      - name: Run Trivy Vulnerability Scanner
+        run: trivy config . --severity CRITICAL,HIGH --exit-code 0
+        working-directory: ${{ env.TF_WORKING_DIR }}
+
+      # -------------------------------
+      # Step 4: Run tfsec Security Scan
+      # -------------------------------
+      # Conducts static analysis to identify potential security risks and
+      # compliance violations (e.g., open security groups, unencrypted resources)
+      # adhering to industry best practices.
+      - name: Run tfsec Security Scanner
+        run: tfsec .
+        working-directory: ${{ env.TF_WORKING_DIR }}
+
+  # --------------------------------
+  # JOB 3: Deployment to DEV Cluster
+  # --------------------------------
+  deploy-dev:
+    name: Deploy to DEV Cluster
+    needs: [validate, sast]
+    runs-on: csec-self-hosted
+    environment: dev
+
+    # Use the custom runner image
+    container:
+      image: ${{ vars.GH_RUNNER_IMAGE }}
+      credentials:
+        username: ${{ secrets.GH_USER }}
+        password: ${{ secrets.GH_TOKEN }}
+
+    steps:
+      # ---------------------
+      # Step 1: Code Checkout
+      # ---------------------
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # -----------------------
+      # Step 2: Cache Providers
+      # -----------------------
+      - name: Cache Terraform Providers
+        uses: ./.github/actions/k8s-cluster/terraform-cache
+        with:
+          lock_file: k8s-terraform/.terraform.lock.hcl
+
+      # ---------------------------------
+      # Step 3: Configure AWS Credentials
+      # ---------------------------------
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ vars.AWS_REGION }}
+          role-to-assume: "arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/${{ secrets.AWS_OIDC_ROLE }}"
+          role-skip-session-tagging: true
+
+      # --------------------------------
+      # Step 4: Terraform Build & Deploy
+      # --------------------------------
+      - name: Terraform Build & Deploy
+        uses: ./.github/actions/k8s-cluster/terraform
+        with:
+          tf_vars_s3_path: s3://${{ secrets.AWS_S3_TF_VAR_FILE }}
+          backend_config_key: k8s-cluster/csec-dev.tfstate
+          working_directory: ${{ env.TF_WORKING_DIR }}
+
+  # -------------------------------
+  # JOB 4: Deployment to QA Cluster
+  # -------------------------------
+  deploy-qa:
+    if: false # Disabled for now
+    name: Deploy to QA Cluster
+    needs: [validate, sast]
+    runs-on: csec-self-hosted
+    environment: qa
+
+    env:
+      GH_USER: ${{ secrets.GH_USER }}
+
+    # Use the custom runner image
+    container:
+      image: ${{ vars.GH_RUNNER_IMAGE }}
+      credentials:
+        username: ${{ secrets.GH_USER }}
+        password: ${{ secrets.GH_TOKEN }}
+
+    steps:
+      # ---------------------
+      # Step 1: Code Checkout
+      # ---------------------
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # -----------------------
+      # Step 2: Cache Providers
+      # -----------------------
+      - name: Cache Terraform Providers
+        uses: ./.github/actions/k8s-cluster/terraform-cache
+        with:
+          lock_file: k8s-terraform/.terraform.lock.hcl
+
+      # ---------------------------------
+      # Step 3: Configure AWS Credentials
+      # ---------------------------------
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ vars.AWS_REGION }}
+          role-to-assume: "arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/${{ secrets.AWS_OIDC_ROLE }}"
+          role-skip-session-tagging: true
+
+      # --------------------------------
+      # Step 4: Terraform Build & Deploy
+      # --------------------------------
+      - name: Terraform Build & Deploy
+        uses: ./.github/actions/k8s-cluster/terraform
+        with:
+          tf_vars_s3_path: s3://${{ secrets.AWS_S3_TF_VAR_FILE }}
+          backend_config_key: k8s-cluster/csec-qa.tfstate
+          working_directory: ${{ env.TF_WORKING_DIR }}
