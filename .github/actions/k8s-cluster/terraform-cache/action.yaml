@@ -1,0 +1,35 @@
+# -----------------------------------------------------------------------------
+# Action  : .github/actions/k8s-cluster/terraform-cache/action.yaml
+# Purpose : Composite action to manage caching of Terraform providers to
+#           speed up initialization and validation steps.
+# -----------------------------------------------------------------------------
+name: "Cache Terraform Providers"
+description: "Caches Terraform plugins to optimize build time"
+inputs:
+  lock_file:
+    description: "Path to .terraform.lock.hcl"
+    required: false
+    default: "k8s-terraform/.terraform.lock.hcl"
+runs:
+  using: "composite"
+  steps:
+    # -----------------------
+    # Step 1: Cache Providers
+    # -----------------------
+    - name: Cache Terraform Providers
+      uses: actions/cache@v4
+      with:
+        path: .terraform.d/plugin-cache
+        key: ${{ runner.os }}-terraform-${{ hashFiles(inputs.lock_file) }}
+        restore-keys: |
+          ${{ runner.os }}-terraform-
+
+    # ---------------------------
+    # Step 2: Configure Cache Dir
+    # ---------------------------
+    - name: Configure Terraform Cache
+      shell: bash
+      run: |
+        mkdir -p .terraform.d/plugin-cache
+        find .terraform.d/plugin-cache -name "*.lock" -type f -delete
+        echo "TF_PLUGIN_CACHE_DIR=$GITHUB_WORKSPACE/.terraform.d/plugin-cache" >> $GITHUB_ENV

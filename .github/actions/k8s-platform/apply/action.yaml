@@ -1,0 +1,42 @@
+# -----------------------------------------------------------------------------
+# Action  : .github/actions/k8s-platform/apply/action.yaml
+# Purpose : Composite action to initialize kubeconfig and apply Kustomize
+#           configuration to the target Kubernetes cluster.
+# -----------------------------------------------------------------------------
+name: "Apply Platform Configuration"
+description: "Initializes kubeconfig and applies Kustomize configuration"
+inputs:
+  kube_config_bucket:
+    description: "S3 bucket containing admin kubeconfig"
+    required: true
+  cluster_env:
+    description: "Cluster environment (dev/qa/prod)"
+    required: true
+runs:
+  using: "composite"
+  steps:
+    # ----------------------------------
+    # Step 1: Initialize Kube Directory
+    # ----------------------------------
+    - name: Initialize Kube Directory
+      shell: bash
+      run: mkdir -p ~/.kube
+
+    # ----------------------------------
+    # Step 2: Download Admin Kubeconfig
+    # ----------------------------------
+    - name: Download Admin Kubeconfig
+      shell: bash
+      run: |
+        echo "Downloading admin kubeconfig from s3://${{ inputs.kube_config_bucket }}/admin.conf"
+        aws s3 cp s3://${{ inputs.kube_config_bucket }}/admin.conf ~/.kube/config
+        chmod 600 ~/.kube/config
+
+    # -----------------------------------
+    # Step 3: Apply Platform Configuration
+    # -----------------------------------
+    - name: Apply Platform Configuration
+      shell: bash
+      run: |
+        echo "Applying Kustomize configuration for ${{ inputs.cluster_env }}..."
+        kubectl apply -k k8s-platform-config/overlays/${{ inputs.cluster_env }}

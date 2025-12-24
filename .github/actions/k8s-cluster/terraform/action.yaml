@@ -1,0 +1,51 @@
+# -----------------------------------------------------------------------------
+# Action  : .github/actions/k8s-cluster/terraform/action.yaml
+# Purpose : Composite action to execute the Terraform deployment workflow:
+#           download config, initialize backend, plan, and apply changes.
+# -----------------------------------------------------------------------------
+name: "Terraform Build & Deploy"
+description: "Downloads config, initializes, plans, and applies Terraform"
+inputs:
+  tf_vars_s3_path:
+    description: "S3 path to the terraform.tfvars file"
+    required: true
+  backend_config_key:
+    description: "Key for the Terraform backend state file"
+    required: true
+  working_directory:
+    description: "Working directory for Terraform commands"
+    required: true
+runs:
+  using: "composite"
+  steps:
+    # ---------------------------------
+    # Step 1: Download Terraform Config
+    # ---------------------------------
+    - name: Download TFVars from S3
+      shell: bash
+      working-directory: ${{ inputs.working_directory }}
+      run: aws s3 cp "${{ inputs.tf_vars_s3_path }}" terraform.tfvars
+
+    # --------------------------
+    # Step 2: Initialize Backend
+    # --------------------------
+    - name: Initialize Backend
+      shell: bash
+      working-directory: ${{ inputs.working_directory }}
+      run: terraform init -reconfigure -backend-config="key=${{ inputs.backend_config_key }}"
+
+    # --------------------------
+    # Step 3: Generate Exec Plan
+    # --------------------------
+    - name: Terraform Plan
+      shell: bash
+      working-directory: ${{ inputs.working_directory }}
+      run: terraform plan -var-file=terraform.tfvars -out=tfplan
+
+    # ---------------------------
+    # Step 4: Apply Infra Changes
+    # ---------------------------
+    - name: Terraform Apply
+      shell: bash
+      working-directory: ${{ inputs.working_directory }}
+      run: terraform apply -auto-approve tfplan

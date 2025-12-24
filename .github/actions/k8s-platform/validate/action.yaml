@@ -1,0 +1,58 @@
+# -----------------------------------------------------------------------------
+# Action  : .github/actions/k8s-platform/validate/action.yaml
+# Purpose : Composite action to verify the existence of critical platform
+#           resources (Namespace, ServiceAccount, RBAC) post-deployment.
+# -----------------------------------------------------------------------------
+name: "Validate Platform Resources"
+description: "Verifies existence of Namespace, SA, Role, and RoleBinding"
+inputs:
+  namespace:
+    description: "Target Namespace"
+    required: true
+  sa_name:
+    description: "Service Account Name"
+    required: true
+  role_name:
+    description: "RBAC Role Name"
+    required: true
+  rb_name:
+    description: "Role Binding Name"
+    required: true
+runs:
+  using: "composite"
+  steps:
+    # -----------------------------------
+    # Step 1: Verify Namespace Existence
+    # -----------------------------------
+    - name: Verify Namespace Existence
+      shell: bash
+      run: |
+        echo "Verifying Namespace: ${{ inputs.namespace }}"
+        kubectl get namespace ${{ inputs.namespace }}
+
+    # ----------------------------------------
+    # Step 2: Verify ServiceAccount Existence
+    # ----------------------------------------
+    - name: Verify ServiceAccount Existence
+      shell: bash
+      run: |
+        echo "Verifying ServiceAccount: ${{ inputs.sa_name }}"
+        kubectl get serviceaccount ${{ inputs.sa_name }} -n ${{ inputs.namespace }}
+
+    # -----------------------------
+    # Step 3: Verify RBAC Role
+    # -----------------------------
+    - name: Verify RBAC Role
+      shell: bash
+      run: |
+        echo "Verifying Role: ${{ inputs.role_name }}"
+        kubectl get role ${{ inputs.role_name }} -n ${{ inputs.namespace }}
+
+    # --------------------------------
+    # Step 4: Verify RBAC RoleBinding
+    # --------------------------------
+    - name: Verify RBAC RoleBinding
+      shell: bash
+      run: |
+        echo "Verifying RoleBinding: ${{ inputs.rb_name }}"
+        kubectl get rolebinding ${{ inputs.rb_name }} -n ${{ inputs.namespace }}
