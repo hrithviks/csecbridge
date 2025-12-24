@@ -39,7 +39,8 @@ locals {
     "s3:*",
     "ssm:*",
     "logs:*",
-    "cloudwatch:*"
+    "cloudwatch:*",
+    "kms:*"
   ]
 
   # IAM allowed actions for state refresh
@@ -48,11 +49,14 @@ locals {
     "iam:List*",
     "iam:Get*",
     "s3:List*",
-    "s3:GetBucketLocation",
+    "s3:Get*",
     "autoscaling:Describe*",
     "elasticloadbalancing:Describe*",
     "ssm:Describe*",
-    "ssm:GetParameter*"
+    "ssm:GetParameter*",
+    "kms:Describe*",
+    "kms:List*",
+    "kms:Get*"
   ]
 
   # IAM allowed resources for "apply" and "destroy"
@@ -64,6 +68,7 @@ locals {
     "arn:aws:ssm:${local.REGION}:${local.ACCOUNT_ID}:*",
     "arn:aws:logs:${local.REGION}:${local.ACCOUNT_ID}:*",
     "arn:aws:cloudwatch:${local.REGION}:${local.ACCOUNT_ID}:*",
+    "arn:aws:kms:${local.REGION}:${local.ACCOUNT_ID}:*",
     # Allow using public AMIs (owned by other accounts)
     "arn:aws:ec2:${local.REGION}::image/*",
     # IAM Resources (Enforce naming prefix)
@@ -149,6 +154,14 @@ resource "aws_security_group" "devops_sg" {
     to_port     = 0
     protocol    = "-1"
     cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  # Allow SSH acccess to the k8s cluster
+  egress {
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["10.0.0.0/16"]
   }
 
   # Allow SSH for management
@@ -284,7 +297,7 @@ resource "aws_iam_role_policy" "environment_policies" {
         Action   = local.IAM_WRITE_ACTIONS
         Resource = local.IAM_ALLOWED_RESOURCES
         Condition = {
-          StringEquals = {
+          StringEqualsIfExists = {
             "aws:ResourceTag/environment" = each.key
           }
         }
