@@ -3,7 +3,7 @@
 # Purpose : This is a simple validation workflow to test the DevOps setup for
 #           cSecBridge project.
 # -----------------------------------------------------------------------------
-name: DevOps Infrastructure Validation Workflow
+name: C-Sec | Deployment | Validation
 
 # Always run on manual triggers only
 on: workflow_dispatch
