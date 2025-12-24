@@ -2,7 +2,7 @@
 # Script  : .github/workflows/k8s-infra-deployment.yaml
 # Purpose : Workflow to build and deploy Terraform configuration for K8s infra.
 # -----------------------------------------------------------------------------
-name: Kubernetes Infrastructure Deployment Workflow
+name: C-Sec | Deployment | Kubernetes Infrastructure
 
 # Trigger on manual dispatch
 on: workflow_dispatch
@@ -46,6 +46,23 @@ jobs:
       # ----------------------
       - name: Checkout Code
         uses: actions/checkout@v4
+
+      # -----------------------------
+      # Step 2 : Cache Providers
+      # -----------------------------
+      - name: Cache Terraform Providers
+        uses: actions/cache@v4
+        with:
+          path: .terraform.d/plugin-cache
+          key: ${{ runner.os }}-terraform-${{ hashFiles('k8s-terraform/.terraform.lock.hcl') }}
+          restore-keys: |
+            ${{ runner.os }}-terraform-
+
+      - name: Configure Terraform Cache
+        run: |
+          mkdir -p .terraform.d/plugin-cache
+          find .terraform.d/plugin-cache -name "*.lock" -type f -delete
+          echo "TF_PLUGIN_CACHE_DIR=$GITHUB_WORKSPACE/.terraform.d/plugin-cache" >> $GITHUB_ENV
 
       # -----------------------------
       # Step 3 : Check Code Formatting
@@ -94,7 +111,7 @@ jobs:
         uses: actions/checkout@v4
 
       # -------------------
-      # Step 3 : Run TFLint
+      # Step 2 : Run TFLint
       # -------------------
       # Performs linting to detect errors that terraform validate misses,
       # including deprecated syntax, unused declarations, and invalid
@@ -106,7 +123,7 @@ jobs:
         working-directory: ${{ env.TF_WORKING_DIR }}
 
       # ---------------------------------
-      # Step 4 : Run Trivy Security Scan
+      # Step 3 : Run Trivy Security Scan
       # ---------------------------------
       # Scans the Terraform configuration for security vulnerabilities and
       # misconfigurations. This step enforces security gates by failing
@@ -116,7 +133,7 @@ jobs:
         working-directory: ${{ env.TF_WORKING_DIR }}
 
       # ---------------------------------
-      # Step 5 : Run tfsec Security Scan
+      # Step 4 : Run tfsec Security Scan
       # ---------------------------------
       # Conducts static analysis to identify potential security risks and
       # compliance violations (e.g., open security groups, unencrypted resources)
@@ -150,8 +167,25 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
+      # ------------------------
+      # Step 2 : Cache Providers
+      # ------------------------
+      - name: Cache Terraform Providers
+        uses: actions/cache@v4
+        with:
+          path: .terraform.d/plugin-cache
+          key: ${{ runner.os }}-terraform-${{ hashFiles('k8s-terraform/.terraform.lock.hcl') }}
+          restore-keys: |
+            ${{ runner.os }}-terraform-
+
+      - name: Configure Terraform Cache
+        run: |
+          mkdir -p .terraform.d/plugin-cache
+          find .terraform.d/plugin-cache -name "*.lock" -type f -delete
+          echo "TF_PLUGIN_CACHE_DIR=$GITHUB_WORKSPACE/.terraform.d/plugin-cache" >> $GITHUB_ENV
+
       # ----------------------------------
-      # Step 2 : Configure AWS Credentials
+      # Step 3 : Configure AWS Credentials
       # ----------------------------------
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -161,28 +195,28 @@ jobs:
           role-skip-session-tagging: true
 
       # ----------------------------------
-      # Step 3 : Download Terraform Config
+      # Step 4 : Download Terraform Config
       # ----------------------------------
       - name: Download TFVars from S3
         run: aws s3 cp "s3://${{ secrets.AWS_S3_TF_VAR_FILE }}" terraform.tfvars
         working-directory: ${{ env.TF_WORKING_DIR }}
 
       # ---------------------------
-      # Step 4 : Initialize Backend
+      # Step 5 : Initialize Backend
       # ---------------------------
       - name: Initialize Backend
-        run: terraform init -reconfigure
+        run: terraform init -reconfigure -backend-config="key=k8s-cluster/csec-dev.tfstate"
         working-directory: ${{ env.TF_WORKING_DIR }}
 
       # ---------------------------
-      # Step 5 : Generate Exec Plan
+      # Step 6 : Generate Exec Plan
       # ---------------------------
       - name: Terraform Plan
         run: terraform plan -var-file=terraform.tfvars -out=tfplan
         working-directory: ${{ env.TF_WORKING_DIR }}
 
       # ---------------------------
-      # Step 6 : Apply Infra Changes
+      # Step 7 : Apply Infra Changes
       # ---------------------------
       - name: Terraform Apply
         run: terraform apply -auto-approve tfplan
@@ -217,8 +251,25 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
+      # -----------------------------
+      # Step 2 : Cache Providers
+      # -----------------------------
+      - name: Cache Terraform Providers
+        uses: actions/cache@v4
+        with:
+          path: .terraform.d/plugin-cache
+          key: ${{ runner.os }}-terraform-${{ hashFiles('k8s-terraform/.terraform.lock.hcl') }}
+          restore-keys: |
+            ${{ runner.os }}-terraform-
+
+      - name: Configure Terraform Cache
+        run: |
+          mkdir -p .terraform.d/plugin-cache
+          find .terraform.d/plugin-cache -name "*.lock" -type f -delete
+          echo "TF_PLUGIN_CACHE_DIR=$GITHUB_WORKSPACE/.terraform.d/plugin-cache" >> $GITHUB_ENV
+
       # ----------------------------------
-      # Step 2 : Configure AWS Credentials
+      # Step 3 : Configure AWS Credentials
       # ----------------------------------
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -228,28 +279,28 @@ jobs:
           role-skip-session-tagging: true
 
       # ----------------------------------
-      # Step 3 : Download Terraform Config
+      # Step 4 : Download Terraform Config
       # ----------------------------------
       - name: Download TFVars from S3
         run: aws s3 cp "s3://${{ secrets.AWS_S3_TF_VAR_FILE }}" terraform.tfvars
         working-directory: ${{ env.TF_WORKING_DIR }}
 
       # ---------------------------
-      # Step 4 : Initialize Backend
+      # Step 5 : Initialize Backend
       # ---------------------------
       - name: Initialize Backend
-        run: terraform init -reconfigure
+        run: terraform init -reconfigure -backend-config="key=k8s-cluster/csec-qa.tfstate"
         working-directory: ${{ env.TF_WORKING_DIR }}
 
       # ---------------------------
-      # Step 5 : Generate Exec Plan
+      # Step 6 : Generate Exec Plan
       # ---------------------------
       - name: Terraform Plan
         run: terraform plan -var-file=terraform.tfvars -out=tfplan
         working-directory: ${{ env.TF_WORKING_DIR }}
 
       # ---------------------------
-      # Step 6 : Apply Infra Changes
+      # Step 7 : Apply Infra Changes
       # ---------------------------
       - name: Terraform Apply
         run: terraform apply -auto-approve tfplan
