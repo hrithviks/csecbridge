@@ -18,22 +18,31 @@ S3_BUCKET_NAME="${s3_bucket_name}"
 AWS_REGION="${aws_region}"
 POD_NETWORK_CIDR="192.168.0.0/16" # For Calico
 
+# -----------------------------------------------------------------------------------
+# Prerequisites: Enable IP Forwarding and Configure Local DNS Alias for Load Balancer
+# -----------------------------------------------------------------------------------
+echo "Enabling IP forwarding..."
+modprobe br_netfilter
+cat <<EOF | tee /etc/sysctl.d/k8s.conf
+net.bridge.bridge-nf-call-iptables  = 1
+net.bridge.bridge-nf-call-ip6tables = 1
+net.ipv4.ip_forward                 = 1
+EOF
+sysctl --system
+
+PRIVATE_IP=$(hostname -I | awk '{print $1}')
+echo "$PRIVATE_IP $LB_DNS_NAME" >> /etc/hosts
+
 # --------------------------------------
 # 1. Initialize Kubernetes Control Plane
 # --------------------------------------
 echo "Initializing Kubernetes control plane..."
 
-# Retrieve the public IP for the API server certificate.
-# This allows kubectl access from outside the VPC.
-PUBLIC_IP=$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4)
-
 # Initialize the cluster using kubeadm.
 # - --control-plane-endpoint: Sets the stable Load Balancer DNS as the cluster entry point.
-# - --apiserver-cert-extra-sans: Adds the instance's Public IP to the certs for direct debugging access.
 kubeadm init \
   --pod-network-cidr="$POD_NETWORK_CIDR" \
-  --control-plane-endpoint="$LB_DNS_NAME:6443" \
-  --apiserver-cert-extra-sans=$PUBLIC_IP
+  --control-plane-endpoint="$LB_DNS_NAME:6443"
 
 # ---------------------------------
 # 2. Configure kubectl for ec2-user
@@ -75,4 +84,4 @@ aws ssm put-parameter \
 # ---------------------------
 echo "Uploading admin kubeconfig to S3..."
 aws s3 cp /etc/kubernetes/admin.conf s3://$S3_BUCKET_NAME/kube-admin.conf
-echo "Control plane initialization complete."
+echo "Control plane initialization complete..."

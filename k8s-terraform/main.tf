@@ -27,7 +27,7 @@ locals {
 
   # Resource Names
   CP_SG_NAME                   = "${local.RESOURCE_PREFIX}-control-plane-sg"
-  WORKER_SG_NAME               = "${local.RESOURCE_PREFIX}-worker-nodes-sg"
+  WK_SG_NAME                   = "${local.RESOURCE_PREFIX}-worker-nodes-sg"
   IAM_ROLE_CP_NAME             = "${local.RESOURCE_PREFIX}-control-plane-role"
   IAM_PROFILE_CP_NAME          = "${local.RESOURCE_PREFIX}-control-plane-profile"
   IAM_ROLE_WN_NAME             = "${local.RESOURCE_PREFIX}-worker-nodes-role"
@@ -46,15 +46,15 @@ locals {
 
   # Resource Descriptions
   CP_SG_DESC                   = "Security Group for Control Plane instances"
-  CP_SG_SSH_INGRESS            = "Allow SSH ingress traffic to Control Plane"
+  CP_SG_DEVOPS_SSH_INGRESS     = "Allow SSH ingress traffic to Control Plane from DevOps VPC"
   CP_SG_API_INGRESS            = "Allow Kubernetes API ingress traffic to Control Plane"
   CP_SG_K8S_API_EGRESS         = "Allow Kubernetes API egress traffic from Control Plane to Worker Nodes"
   CP_SG_K8S_SSH_EGRESS         = "Allow SSH egress traffic from Control Plane to Worker Nodes"
   CP_SG_INTERNET_ACCESS        = "Allow unrestricted internet egress from Control Plane"
-  WORKER_SG_DESC               = "Security Group for Worker Node instances"
-  WORKER_SG_K8S_API_INGRESS    = "Allow Kubelet API ingress traffic from Control Plane to Worker Nodes"
-  WORKER_SG_K8S_SSH_INGRESS    = "Allow SSH ingress traffic from Control Plane to Worker Nodes"
-  WORKER_SG_INTERNET_ACCESS    = "Allow unrestricted internet egress from Worker Nodes"
+  WK_SG_DESC                   = "Security Group for Worker Node instances"
+  WK_SG_K8S_API_INGRESS        = "Allow Kubelet API ingress traffic from Control Plane to Worker Nodes"
+  WK_SG_DEVOPS_SSH_INGRESS     = "Allow SSH ingress traffic to Worker Nodes from DevOps VPC"
+  WK_SG_INTERNET_ACCESS        = "Allow unrestricted internet egress from Worker Nodes"
   IAM_ROLE_CP_DESC             = "IAM Role for Control Plane instances"
   IAM_ROLE_WN_DESC             = "IAM Role for Worker Node instances"
   IAM_ROLE_FLOW_LOG_DESC       = "IAM Role for VPC Flow Logs"
@@ -210,8 +210,8 @@ module "control_plane_security" {
 */
 module "worker_node_security" {
   source         = "./modules/security"
-  sg_name        = local.WORKER_SG_NAME
-  sg_description = local.WORKER_SG_DESC
+  sg_name        = local.WK_SG_NAME
+  sg_description = local.WK_SG_DESC
   sg_vpc_id      = module.network.vpc_id
   sg_tags        = {}
 }
@@ -226,7 +226,7 @@ module "worker_node_security" {
 */
 resource "aws_vpc_security_group_ingress_rule" "cp_ssh_ingress" {
   security_group_id = module.control_plane_security.sg_id
-  description       = local.CP_SG_SSH_INGRESS
+  description       = local.CP_SG_DEVOPS_SSH_INGRESS
   cidr_ipv4         = var.devops_vpc_cidr
   from_port         = 22
   ip_protocol       = "tcp"
@@ -237,6 +237,15 @@ resource "aws_vpc_security_group_ingress_rule" "cp_api_ingress" {
   security_group_id = module.control_plane_security.sg_id
   description       = local.CP_SG_API_INGRESS
   cidr_ipv4         = var.devops_vpc_cidr
+  from_port         = 6443
+  ip_protocol       = "tcp"
+  to_port           = 6443
+}
+
+resource "aws_vpc_security_group_ingress_rule" "cp_api_ingress_vpc" {
+  security_group_id = module.control_plane_security.sg_id
+  description       = "Allow Kubernetes API ingress traffic from VPC (NLB Health Checks)"
+  cidr_ipv4         = var.network_vpc_cidr
   from_port         = 6443
   ip_protocol       = "tcp"
   to_port           = 6443
@@ -272,21 +281,21 @@ resource "aws_vpc_security_group_egress_rule" "cp_to_worker_ssh" {
 * on security revamp.
 */
 resource "aws_vpc_security_group_ingress_rule" "worker_from_cp_ssh" {
-  security_group_id            = module.worker_node_security.sg_id
-  description                  = local.WORKER_SG_K8S_SSH_INGRESS
-  referenced_security_group_id = module.control_plane_security.sg_id
-  from_port                    = 10250
-  ip_protocol                  = "tcp"
-  to_port                      = 10250
+  security_group_id = module.worker_node_security.sg_id
+  description       = local.WK_SG_DEVOPS_SSH_INGRESS
+  cidr_ipv4         = var.devops_vpc_cidr
+  from_port         = 22
+  ip_protocol       = "tcp"
+  to_port           = 22
 }
 
 resource "aws_vpc_security_group_ingress_rule" "worker_from_cp_api" {
   security_group_id            = module.worker_node_security.sg_id
-  description                  = local.WORKER_SG_K8S_API_INGRESS
+  description                  = local.WK_SG_K8S_API_INGRESS
   referenced_security_group_id = module.control_plane_security.sg_id
-  from_port                    = 22
+  from_port                    = 10250
   ip_protocol                  = "tcp"
-  to_port                      = 22
+  to_port                      = 10250
 }
 
 /*
@@ -306,7 +315,7 @@ resource "aws_vpc_security_group_egress_rule" "cp_internet_access" {
 
 resource "aws_vpc_security_group_egress_rule" "worker_internet_access" {
   security_group_id = module.worker_node_security.sg_id
-  description       = local.WORKER_SG_INTERNET_ACCESS
+  description       = local.WK_SG_INTERNET_ACCESS
   cidr_ipv4         = "0.0.0.0/0"
   ip_protocol       = "-1"
 }
@@ -626,9 +635,9 @@ module "k8s_control_plane" {
   ec2_key_name      = var.compute_k8s_instance_ssh_key_name
 
   # Network config
-  ec2_subnet_ids                  = module.network.public_subnet_ids
+  ec2_subnet_ids                  = module.network.private_subnet_ids
   ec2_security_group_ids          = [module.control_plane_security.sg_id]
-  ec2_associate_public_ip_address = true
+  ec2_associate_public_ip_address = false
 
   # IAM config
   ec2_iam_instance_profile_name = aws_iam_instance_profile.iam_instance_profile_cp.name

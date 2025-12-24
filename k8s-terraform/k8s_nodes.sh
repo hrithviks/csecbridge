@@ -16,6 +16,18 @@ SSM_CLUSTER_JOIN_PARAMETER_NAME="${ssm_cluster_join_cmd_parameter_name}"
 AWS_REGION="${aws_region}"
 STATE_FILE="/etc/kubeadm-join.last"
 
+# --------------------------------------
+# 0. Prerequisites: Enable IP Forwarding
+# --------------------------------------
+echo "Enabling IP forwarding..."
+modprobe br_netfilter
+cat <<EOF | tee /etc/sysctl.d/k8s.conf
+net.bridge.bridge-nf-call-iptables  = 1
+net.bridge.bridge-nf-call-ip6tables = 1
+net.ipv4.ip_forward                 = 1
+EOF
+sysctl --system
+
 # ----------------------------------------------------
 # 1. Polls for Cluster Readiness and Joins Worker Node
 # ----------------------------------------------------
@@ -130,3 +142,4 @@ EOF
 # Start the monitor
 systemctl daemon-reload
 systemctl enable --now k8s-worker-monitor.service
+echo "Worker node initialization complete..."
