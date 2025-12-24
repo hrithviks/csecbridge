@@ -45,18 +45,15 @@ locals {
 
   # IAM allowed actions for state refresh
   IAM_READ_ACTIONS = [
-    "ec2:Describe*",
-    "iam:List*",
-    "iam:Get*",
-    "s3:List*",
-    "s3:Get*",
-    "autoscaling:Describe*",
-    "elasticloadbalancing:Describe*",
-    "ssm:Describe*",
-    "ssm:GetParameter*",
-    "kms:Describe*",
-    "kms:List*",
-    "kms:Get*"
+    "ec2:*",
+    "elasticloadbalancing:*",
+    "autoscaling:*",
+    "iam:*",
+    "s3:*",
+    "ssm:*",
+    "logs:*",
+    "cloudwatch:*",
+    "kms:*"
   ]
 
   # IAM allowed resources for "apply" and "destroy"
