@@ -30,7 +30,7 @@ jobs:
   validate:
     name: Terraform Validation
     runs-on: csec-self-hosted
-    environment: dev
+    environment: infra-dev
 
     container:
       image: ${{ vars.GH_RUNNER_IMAGE }}
@@ -82,7 +82,7 @@ jobs:
   sast:
     name: Infrastructure SAST
     runs-on: csec-self-hosted
-    environment: dev
+    environment: infra-dev
 
     container:
       image: ${{ vars.GH_RUNNER_IMAGE }}
@@ -136,7 +136,7 @@ jobs:
     name: Deploy to DEV Cluster
     needs: [validate, sast]
     runs-on: csec-self-hosted
-    environment: dev
+    environment: infra-dev
 
     # Use the custom runner image
     container:
@@ -176,7 +176,7 @@ jobs:
       - name: Terraform Build & Deploy
         uses: ./.github/actions/k8s-cluster/terraform
         with:
-          tf_vars_s3_path: s3://${{ secrets.AWS_S3_TF_VAR_FILE }}
+          tf_vars_s3_path: s3://${{ secrets.AWS_S3_TFVAR_BUCKET }}
           backend_config_key: k8s-cluster/csec-dev.tfstate
           working_directory: ${{ env.TF_WORKING_DIR }}
 
@@ -188,7 +188,7 @@ jobs:
     name: Deploy to QA Cluster
     needs: [validate, sast]
     runs-on: csec-self-hosted
-    environment: qa
+    environment: infra-qa
 
     env:
       GH_USER: ${{ secrets.GH_USER }}
@@ -231,6 +231,6 @@ jobs:
       - name: Terraform Build & Deploy
         uses: ./.github/actions/k8s-cluster/terraform
         with:
-          tf_vars_s3_path: s3://${{ secrets.AWS_S3_TF_VAR_FILE }}
+          tf_vars_s3_path: s3://${{ secrets.AWS_S3_TFVAR_BUCKET }}
           backend_config_key: k8s-cluster/csec-qa.tfstate
           working_directory: ${{ env.TF_WORKING_DIR }}
