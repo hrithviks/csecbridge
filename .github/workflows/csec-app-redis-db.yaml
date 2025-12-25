@@ -1,0 +1,416 @@
+# -----------------------------------------------------------------------------
+# Script  : .github/workflows/csec-app-redis-db.yaml
+# Purpose : Workflow to build and deploy the Redis DB Service for cSecBridge
+# -----------------------------------------------------------------------------
+name: C-Sec | Deployment | Redis DB Service
+on: workflow_dispatch
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  SERVICE_NAME: csb-redis-db
+  SERVICE_PATH: app-redis-db
+  IMAGE_NAME: csb-redis-db
+
+jobs:
+  # ----------------------------------
+  # JOB 1: Validation (Linting & SAST)
+  # ----------------------------------
+  # This job performs static code analysis and security scanning
+  # on the Redis service configuration and source files.
+  validate:
+    name: Service Validation
+    runs-on: csec-self-hosted
+    environment: app-db-dev
+
+    container:
+      image: ${{ vars.GH_RUNNER_IMAGE }}
+      credentials:
+        username: ${{ secrets.GH_USER }}
+        password: ${{ secrets.GH_TOKEN }}
+
+    steps:
+      # ----------------------
+      # Step 1: Code Checkout
+      # ----------------------
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # ---------------------------
+      # Step 2: Run Trivy (FS Scan)
+      # ---------------------------
+      - name: Run Trivy (FS Scan)
+        run: |
+          trivy fs ${{ env.SERVICE_PATH }} \
+            --scanners vuln,config \
+            --severity HIGH,CRITICAL \
+            --exit-code 1
+
+  # ----------------------------------
+  # JOB 2: Build & Push Image
+  # ----------------------------------
+  # This job builds the Docker image for the Redis service, scans it
+  # for vulnerabilities, and pushes it to the container registry.
+  build-push:
+    name: Build & Push Image
+    needs: [validate]
+    runs-on: csec-self-hosted
+    environment: app-db-dev
+
+    container:
+      image: ${{ vars.GH_RUNNER_IMAGE }}
+      credentials:
+        username: ${{ secrets.GH_USER }}
+        password: ${{ secrets.GH_TOKEN }}
+
+    outputs:
+      image_uri: ${{ steps.image-def.outputs.uri }}
+
+    steps:
+      # ----------------------
+      # Step 1: Code Checkout
+      # ----------------------
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # ----------------------
+      # Step 2: Define Image URI
+      # ----------------------
+      - name: Define Image URI
+        id: image-def
+        run: |
+          echo "uri=ghcr.io/${{ secrets.GH_USER }}/${{ env.IMAGE_NAME }}:${{ github.sha }}" >> $GITHUB_OUTPUT
+
+      # ----------------------
+      # Step 3: Build Image
+      # ----------------------
+      - name: Build Docker Image
+        run: |
+          docker build -t ${{ steps.image-def.outputs.uri }} ${{ env.SERVICE_PATH }}
+
+      # ----------------------
+      # Step 4: Scan Image
+      # ----------------------
+      - name: Run Trivy (Image Scan)
+        run: |
+          trivy image ${{ steps.image-def.outputs.uri }} \
+            --scanners vuln \
+            --severity HIGH,CRITICAL \
+            --exit-code 1
+
+      # ----------------------
+      # Step 5: Login to Registry
+      # ----------------------
+      - name: Login to GitHub Container Registry
+        run: |
+          echo "${{ secrets.GH_TOKEN }}" | docker login ghcr.io -u ${{ secrets.GH_USER }} --password-stdin
+
+      # ----------------------
+      # Step 6: Push Image
+      # ----------------------
+      - name: Push Docker Image
+        run: docker push ${{ steps.image-def.outputs.uri }}
+
+  # ----------------------------------
+  # JOB 3: Deploy to DEV
+  # ----------------------------------
+  # This job deploys the Redis service Helm chart to the Development
+  # Kubernetes cluster.
+  deploy-dev:
+    name: Deploy Service (DEV)
+    needs: [build-push]
+    runs-on: csec-self-hosted
+    environment: app-db-dev
+
+    env:
+      AWS_REGION: ap-southeast-1
+      KUBE_CONFIG_BUCKET: csec-dev-k8s-config
+      NAMESPACE: csb-dev
+      HELM_RELEASE_NAME: csb-redis-rel
+
+    container:
+      image: ${{ vars.GH_RUNNER_IMAGE }}
+      credentials:
+        username: ${{ secrets.GH_USER }}
+        password: ${{ secrets.GH_TOKEN }}
+
+    steps:
+      # ----------------------
+      # Step 1: Code Checkout
+      # ----------------------
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # ----------------------------------
+      # Step 2: Configure AWS Credentials
+      # ----------------------------------
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: "arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/${{ secrets.AWS_OIDC_ROLE }}"
+          role-skip-session-tagging: true
+
+      # ----------------------------------
+      # Step 3: Retrieve Kubeconfig
+      # ----------------------------------
+      - name: Retrieve Kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          aws s3 cp s3://${{ env.KUBE_CONFIG_BUCKET }}/config ~/.kube/config
+
+      # ----------------------------------
+      # Step 4: Deploy Helm Chart
+      # ----------------------------------
+      - name: Deploy Helm Chart
+        run: |
+          helm upgrade --install ${{ env.HELM_RELEASE_NAME }} ${{ env.SERVICE_PATH }}/helm \
+            --namespace ${{ env.NAMESPACE }} \
+            --set statefulset.image.uri=${{ needs.build-push.outputs.image_uri }} \
+            --wait --timeout=5m
+
+  # ----------------------------------
+  # JOB 4: Verify & Configure DEV
+  # ----------------------------------
+  # This job performs post-deployment validation, configures Redis ACLs,
+  # and syncs passwords to AWS Secrets Manager.
+  verify-dev:
+    name: Verify & Configure (DEV)
+    needs: [deploy-dev]
+    runs-on: csec-self-hosted
+    environment: app-db-dev
+
+    env:
+      AWS_REGION: ap-southeast-1
+      KUBE_CONFIG_BUCKET: csec-dev-k8s-config
+      NAMESPACE: csb-dev
+      HELM_RELEASE_NAME: csb-redis-rel
+      REDIS_API_USER: csb_api_client
+
+    container:
+      image: ${{ vars.GH_RUNNER_IMAGE }}
+      credentials:
+        username: ${{ secrets.GH_USER }}
+        password: ${{ secrets.GH_TOKEN }}
+
+    steps:
+      # ----------------------------------
+      # Step 1: Configure AWS Credentials
+      # ----------------------------------
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: "arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/${{ secrets.AWS_OIDC_ROLE }}"
+          role-skip-session-tagging: true
+
+      # ----------------------------------
+      # Step 2: Retrieve Kubeconfig
+      # ----------------------------------
+      - name: Retrieve Kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          aws s3 cp s3://${{ env.KUBE_CONFIG_BUCKET }}/config ~/.kube/config
+
+      # ----------------------------------
+      # Step 3: Validate Helm Release
+      # ----------------------------------
+      - name: Validate Helm Release
+        run: |
+          helm list -n ${{ env.NAMESPACE }} | grep ${{ env.HELM_RELEASE_NAME }}
+
+      # ----------------------------------
+      # Step 4: Validate Pod Status
+      # ----------------------------------
+      - name: Validate Pod Status
+        run: |
+          kubectl get pods -n ${{ env.NAMESPACE }} -l app.kubernetes.io/instance=${{ env.HELM_RELEASE_NAME }} | grep Running
+
+      # ----------------------------------
+      # Step 5: Configure Redis ACL
+      # ----------------------------------
+      - name: Configure Redis ACL
+        run: |
+          # Get the Pod Name
+          POD_NAME=$(kubectl get pods -n ${{ env.NAMESPACE }} -l app.kubernetes.io/instance=${{ env.HELM_RELEASE_NAME }} -o jsonpath='{.items[0].metadata.name}')
+
+          echo "Configuring ACLs on pod: $POD_NAME"
+
+          # Set ACL for API user
+          kubectl exec -n ${{ env.NAMESPACE }} $POD_NAME -- \
+            env REDISCLI_AUTH='${{ secrets.CSB_REDIS_DEF_PSWD }}' \
+            redis-cli ACL SETUSER ${{ env.REDIS_API_USER }} \>${{ secrets.CSB_API_REDIS_PSWD }} ON allkeys +@all
+            
+          # Save ACLs
+          kubectl exec -n ${{ env.NAMESPACE }} $POD_NAME -- \
+            env REDISCLI_AUTH='${{ secrets.CSB_REDIS_DEF_PSWD }}' \
+            redis-cli ACL SAVE
+
+      # ----------------------------------
+      # Step 6: Upload to AWS Secrets
+      # ----------------------------------
+      - name: Upload Passwords to AWS Secrets Manager
+        run: |
+          # Helper function to create or update secret
+          upload_secret() {
+            local name=$1
+            local value=$2
+            echo "Uploading secret: $name"
+            aws secretsmanager create-secret --name "$name" --secret-string "$value" 2>/dev/null || \
+            aws secretsmanager put-secret-value --secret-id "$name" --secret-string "$value"
+          }
+
+          upload_secret "${{ env.NAMESPACE }}/redis/csb_api_user" "${{ secrets.CSB_API_REDIS_PSWD }}"
+
+  # ----------------------------------
+  # JOB 5: Deploy to QA
+  # ----------------------------------
+  # This job deploys the Redis service Helm chart to the QA
+  # Kubernetes cluster.
+  deploy-qa:
+    name: Deploy Service (QA)
+    needs: [build-push, verify-dev]
+    runs-on: csec-self-hosted
+    environment: app-db-qa
+
+    env:
+      AWS_REGION: ap-southeast-1
+      KUBE_CONFIG_BUCKET: csec-qa-k8s-config
+      NAMESPACE: csb-qa
+      HELM_RELEASE_NAME: csb-redis-rel
+
+    container:
+      image: ${{ vars.GH_RUNNER_IMAGE }}
+      credentials:
+        username: ${{ secrets.GH_USER }}
+        password: ${{ secrets.GH_TOKEN }}
+
+    steps:
+      # ----------------------
+      # Step 1: Code Checkout
+      # ----------------------
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # ----------------------------------
+      # Step 2: Configure AWS Credentials
+      # ----------------------------------
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: "arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/${{ secrets.AWS_OIDC_ROLE }}"
+          role-skip-session-tagging: true
+
+      # ----------------------------------
+      # Step 3: Retrieve Kubeconfig
+      # ----------------------------------
+      - name: Retrieve Kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          aws s3 cp s3://${{ env.KUBE_CONFIG_BUCKET }}/config ~/.kube/config
+
+      # ----------------------------------
+      # Step 4: Deploy Helm Chart
+      # ----------------------------------
+      - name: Deploy Helm Chart
+        run: |
+          helm upgrade --install ${{ env.HELM_RELEASE_NAME }} ${{ env.SERVICE_PATH }}/helm \
+            --namespace ${{ env.NAMESPACE }} \
+            --set statefulset.image.uri=${{ needs.build-push.outputs.image_uri }} \
+            --wait --timeout=5m
+
+  # ----------------------------------
+  # JOB 6: Verify & Configure QA
+  # ----------------------------------
+  # This job performs post-deployment validation, configures Redis ACLs,
+  # and syncs passwords to AWS Secrets Manager.
+  verify-qa:
+    name: Verify & Configure (QA)
+    needs: [deploy-qa]
+    runs-on: csec-self-hosted
+    environment: app-db-qa
+
+    env:
+      AWS_REGION: ap-southeast-1
+      KUBE_CONFIG_BUCKET: csec-qa-k8s-config
+      NAMESPACE: csb-qa
+      HELM_RELEASE_NAME: csb-redis-rel
+      REDIS_API_USER: csb_api_client
+
+    container:
+      image: ${{ vars.GH_RUNNER_IMAGE }}
+      credentials:
+        username: ${{ secrets.GH_USER }}
+        password: ${{ secrets.GH_TOKEN }}
+
+    steps:
+      # ----------------------------------
+      # Step 1: Configure AWS Credentials
+      # ----------------------------------
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: "arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/${{ secrets.AWS_OIDC_ROLE }}"
+          role-skip-session-tagging: true
+
+      # ----------------------------------
+      # Step 2: Retrieve Kubeconfig
+      # ----------------------------------
+      - name: Retrieve Kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          aws s3 cp s3://${{ env.KUBE_CONFIG_BUCKET }}/config ~/.kube/config
+
+      # ----------------------------------
+      # Step 3: Validate Helm Release
+      # ----------------------------------
+      - name: Validate Helm Release
+        run: |
+          helm list -n ${{ env.NAMESPACE }} | grep ${{ env.HELM_RELEASE_NAME }}
+
+      # ----------------------------------
+      # Step 4: Validate Pod Status
+      # ----------------------------------
+      - name: Validate Pod Status
+        run: |
+          kubectl get pods -n ${{ env.NAMESPACE }} -l app.kubernetes.io/instance=${{ env.HELM_RELEASE_NAME }} | grep Running
+
+      # ----------------------------------
+      # Step 5: Configure Redis ACL
+      # ----------------------------------
+      - name: Configure Redis ACL
+        run: |
+          # Get the Pod Name
+          POD_NAME=$(kubectl get pods -n ${{ env.NAMESPACE }} -l app.kubernetes.io/instance=${{ env.HELM_RELEASE_NAME }} -o jsonpath='{.items[0].metadata.name}')
+
+          echo "Configuring ACLs on pod: $POD_NAME"
+
+          # Set ACL for API user
+          kubectl exec -n ${{ env.NAMESPACE }} $POD_NAME -- \
+            env REDISCLI_AUTH='${{ secrets.CSB_REDIS_DEF_PSWD }}' \
+            redis-cli ACL SETUSER ${{ env.REDIS_API_USER }} \>${{ secrets.CSB_API_REDIS_PSWD }} ON allkeys +@all
+            
+          # Save ACLs
+          kubectl exec -n ${{ env.NAMESPACE }} $POD_NAME -- \
+            env REDISCLI_AUTH='${{ secrets.CSB_REDIS_DEF_PSWD }}' \
+            redis-cli ACL SAVE
+
+      # ----------------------------------
+      # Step 6: Upload to AWS Secrets
+      # ----------------------------------
+      - name: Upload Passwords to AWS Secrets Manager
+        run: |
+          # Helper function to create or update secret
+          upload_secret() {
+            local name=$1
+            local value=$2
+            echo "Uploading secret: $name"
+            aws secretsmanager create-secret --name "$name" --secret-string "$value" 2>/dev/null || \
+            aws secretsmanager put-secret-value --secret-id "$name" --secret-string "$value"
+          }
+
+          upload_secret "${{ env.NAMESPACE }}/redis/csb_api_user" "${{ secrets.CSB_API_REDIS_PSWD }}"

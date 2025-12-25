@@ -1,0 +1,490 @@
+# -----------------------------------------------------------------------------
+# Script  : .github/workflows/csec-app-api-service.yaml
+# Purpose : Workflow to build and deploy the API Service for cSecBridge
+# -----------------------------------------------------------------------------
+name: C-Sec | Deployment | API Service
+on: workflow_dispatch
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  SERVICE_NAME: csb-api-service
+  SERVICE_PATH: app-api-service
+  IMAGE_NAME: csb-api-service
+
+jobs:
+  # ----------------------------------
+  # JOB 1: Validation (Linting & SAST)
+  # ----------------------------------
+  # This job performs static code analysis on the Python source code
+  # and scans for security vulnerabilities.
+  validate:
+    name: Service Validation
+    runs-on: csec-self-hosted
+    environment: app-dev
+
+    container:
+      image: ${{ vars.GH_RUNNER_IMAGE }}
+      credentials:
+        username: ${{ secrets.GH_USER }}
+        password: ${{ secrets.GH_TOKEN }}
+
+    steps:
+      # ----------------------
+      # Step 1: Code Checkout
+      # ----------------------
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # ---------------------------
+      # Step 2: Run Flake8 (Lint)
+      # ---------------------------
+      - name: Run Flake8 (Linting)
+        run: flake8 ${{ env.SERVICE_PATH }}/src/
+
+      # ---------------------------
+      # Step 3: Run Bandit (SAST)
+      # ---------------------------
+      - name: Run Bandit (SAST)
+        run: bandit -r ${{ env.SERVICE_PATH }}/src/ -ll
+
+      # ---------------------------
+      # Step 4: Run Trivy (FS Scan)
+      # ---------------------------
+      - name: Run Trivy (FS Scan)
+        run: |
+          trivy fs ${{ env.SERVICE_PATH }} \
+            --scanners vuln \
+            --severity HIGH,CRITICAL \
+            --exit-code 1
+
+  # ----------------------------------
+  # JOB 2: Build & Push Image
+  # ----------------------------------
+  # This job builds the Docker image for the API service, scans it
+  # for vulnerabilities, and pushes it to the container registry.
+  build-push:
+    name: Build & Push Image
+    needs: [validate]
+    runs-on: csec-self-hosted
+    environment: app-dev
+
+    container:
+      image: ${{ vars.GH_RUNNER_IMAGE }}
+      credentials:
+        username: ${{ secrets.GH_USER }}
+        password: ${{ secrets.GH_TOKEN }}
+
+    outputs:
+      image_uri: ${{ steps.image-def.outputs.uri }}
+
+    steps:
+      # ----------------------
+      # Step 1: Code Checkout
+      # ----------------------
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # ----------------------
+      # Step 2: Define Image URI
+      # ----------------------
+      - name: Define Image URI
+        id: image-def
+        run: |
+          echo "uri=ghcr.io/${{ secrets.GH_USER }}/${{ env.IMAGE_NAME }}:${{ github.sha }}" >> $GITHUB_OUTPUT
+
+      # ----------------------
+      # Step 3: Build Image
+      # ----------------------
+      - name: Build Docker Image
+        run: |
+          docker build -t ${{ steps.image-def.outputs.uri }} ${{ env.SERVICE_PATH }}
+
+      # ----------------------
+      # Step 4: Scan Image
+      # ----------------------
+      - name: Run Trivy (Image Scan)
+        run: |
+          trivy image ${{ steps.image-def.outputs.uri }} \
+            --scanners vuln \
+            --severity HIGH,CRITICAL \
+            --exit-code 1
+
+      # ----------------------
+      # Step 5: Login to Registry
+      # ----------------------
+      - name: Login to GitHub Container Registry
+        run: |
+          echo "${{ secrets.GH_TOKEN }}" | docker login ghcr.io -u ${{ secrets.GH_USER }} --password-stdin
+
+      # ----------------------
+      # Step 6: Push Image
+      # ----------------------
+      - name: Push Docker Image
+        run: docker push ${{ steps.image-def.outputs.uri }}
+
+  # ----------------------------------
+  # JOB 3: Deploy to DEV
+  # ----------------------------------
+  # This job deploys the API service Helm chart to the Development
+  # Kubernetes cluster.
+  deploy-dev:
+    name: Deploy Service (DEV)
+    needs: [build-push]
+    runs-on: csec-self-hosted
+    environment: app-dev
+
+    env:
+      AWS_REGION: ap-southeast-1
+      KUBE_CONFIG_BUCKET: csec-dev-k8s-config
+      NAMESPACE: csb-dev
+      HELM_RELEASE_NAME: csb-api-rel
+
+    container:
+      image: ${{ vars.GH_RUNNER_IMAGE }}
+      credentials:
+        username: ${{ secrets.GH_USER }}
+        password: ${{ secrets.GH_TOKEN }}
+
+    steps:
+      # ----------------------
+      # Step 1: Code Checkout
+      # ----------------------
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # ----------------------------------
+      # Step 2: Configure AWS Credentials
+      # ----------------------------------
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: "arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/${{ secrets.AWS_OIDC_ROLE }}"
+          role-skip-session-tagging: true
+
+      # ----------------------------------
+      # Step 3: Retrieve Kubeconfig
+      # ----------------------------------
+      - name: Retrieve Kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          aws s3 cp s3://${{ env.KUBE_CONFIG_BUCKET }}/config ~/.kube/config
+
+      # ----------------------------------
+      # Step 4: Deploy Helm Chart
+      # ----------------------------------
+      - name: Deploy Helm Chart
+        run: |
+          helm upgrade --install ${{ env.HELM_RELEASE_NAME }} ${{ env.SERVICE_PATH }}/helm \
+            --namespace ${{ env.NAMESPACE }} \
+            --set deployment.image.uri=${{ needs.build-push.outputs.image_uri }} \
+            --wait --timeout=5m
+
+  # ----------------------------------
+  # JOB 4: Init DB (DEV)
+  # ----------------------------------
+  # This job executes the backend.sql script to create database
+  # objects (tables, views, etc.) in the Development environment.
+  init-db-dev:
+    name: Initialize DB (DEV)
+    needs: [deploy-dev]
+    runs-on: csec-self-hosted
+    environment: app-dev
+
+    env:
+      AWS_REGION: ap-southeast-1
+      KUBE_CONFIG_BUCKET: csec-dev-k8s-config
+      NAMESPACE: csb-dev
+      DB_NAME: csb_app_db
+      DB_APP_USER: csb_app
+      DB_LABEL: app.kubernetes.io/name=csb-postgres-service
+
+    container:
+      image: ${{ vars.GH_RUNNER_IMAGE }}
+      credentials:
+        username: ${{ secrets.GH_USER }}
+        password: ${{ secrets.GH_TOKEN }}
+
+    steps:
+      # ----------------------
+      # Step 1: Code Checkout
+      # ----------------------
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # ----------------------------------
+      # Step 2: Configure AWS Credentials
+      # ----------------------------------
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: "arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/${{ secrets.AWS_OIDC_ROLE }}"
+          role-skip-session-tagging: true
+
+      # ----------------------------------
+      # Step 3: Retrieve Kubeconfig
+      # ----------------------------------
+      - name: Retrieve Kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          aws s3 cp s3://${{ env.KUBE_CONFIG_BUCKET }}/config ~/.kube/config
+
+      # ----------------------------------
+      # Step 4: Execute Backend SQL
+      # ----------------------------------
+      - name: Execute Backend SQL
+        run: |
+          # Get the Pod Name
+          POD_NAME=$(kubectl get pods -n ${{ env.NAMESPACE }} -l ${{ env.DB_LABEL }} -o jsonpath='{.items[0].metadata.name}')
+
+          echo "Executing backend.sql on pod: $POD_NAME"
+
+          # Copy SQL file to pod
+          kubectl cp ${{ env.SERVICE_PATH }}/sql/backend.sql ${{ env.NAMESPACE }}/$POD_NAME:/tmp/backend.sql
+
+          # Execute SQL
+          kubectl exec -n ${{ env.NAMESPACE }} $POD_NAME -- \
+            env PGPASSWORD='${{ secrets.CSB_APP_USER_PSWD }}' \
+            psql -U ${{ env.DB_APP_USER }} -d ${{ env.DB_NAME }} -f /tmp/backend.sql
+
+  # ----------------------------------
+  # JOB 5: Verify DEV
+  # ----------------------------------
+  # This job performs post-deployment validation to ensure
+  # the service is running in the Development cluster.
+  verify-dev:
+    name: Verify Service (DEV)
+    needs: [init-db-dev]
+    runs-on: csec-self-hosted
+    environment: app-dev
+
+    env:
+      AWS_REGION: ap-southeast-1
+      KUBE_CONFIG_BUCKET: csec-dev-k8s-config
+      NAMESPACE: csb-dev
+      HELM_RELEASE_NAME: csb-api-rel
+
+    container:
+      image: ${{ vars.GH_RUNNER_IMAGE }}
+      credentials:
+        username: ${{ secrets.GH_USER }}
+        password: ${{ secrets.GH_TOKEN }}
+
+    steps:
+      # ----------------------------------
+      # Step 1: Configure AWS Credentials
+      # ----------------------------------
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: "arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/${{ secrets.AWS_OIDC_ROLE }}"
+          role-skip-session-tagging: true
+
+      # ----------------------------------
+      # Step 2: Retrieve Kubeconfig
+      # ----------------------------------
+      - name: Retrieve Kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          aws s3 cp s3://${{ env.KUBE_CONFIG_BUCKET }}/config ~/.kube/config
+
+      # ----------------------------------
+      # Step 3: Validate Helm Release
+      # ----------------------------------
+      - name: Validate Helm Release
+        run: |
+          helm list -n ${{ env.NAMESPACE }} | grep ${{ env.HELM_RELEASE_NAME }}
+
+      # ----------------------------------
+      # Step 4: Validate Pod Status
+      # ----------------------------------
+      - name: Validate Pod Status
+        run: |
+          kubectl get pods -n ${{ env.NAMESPACE }} -l app.kubernetes.io/instance=${{ env.HELM_RELEASE_NAME }} | grep Running
+
+  # ----------------------------------
+  # JOB 6: Deploy to QA
+  # ----------------------------------
+  # This job deploys the API service Helm chart to the QA
+  # Kubernetes cluster.
+  deploy-qa:
+    name: Deploy Service (QA)
+    needs: [build-push, verify-dev]
+    runs-on: csec-self-hosted
+    environment: app-qa
+
+    env:
+      AWS_REGION: ap-southeast-1
+      KUBE_CONFIG_BUCKET: csec-qa-k8s-config
+      NAMESPACE: csb-qa
+      HELM_RELEASE_NAME: csb-api-rel
+
+    container:
+      image: ${{ vars.GH_RUNNER_IMAGE }}
+      credentials:
+        username: ${{ secrets.GH_USER }}
+        password: ${{ secrets.GH_TOKEN }}
+
+    steps:
+      # ----------------------
+      # Step 1: Code Checkout
+      # ----------------------
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # ----------------------------------
+      # Step 2: Configure AWS Credentials
+      # ----------------------------------
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: "arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/${{ secrets.AWS_OIDC_ROLE }}"
+          role-skip-session-tagging: true
+
+      # ----------------------------------
+      # Step 3: Retrieve Kubeconfig
+      # ----------------------------------
+      - name: Retrieve Kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          aws s3 cp s3://${{ env.KUBE_CONFIG_BUCKET }}/config ~/.kube/config
+
+      # ----------------------------------
+      # Step 4: Deploy Helm Chart
+      # ----------------------------------
+      - name: Deploy Helm Chart
+        run: |
+          helm upgrade --install ${{ env.HELM_RELEASE_NAME }} ${{ env.SERVICE_PATH }}/helm \
+            --namespace ${{ env.NAMESPACE }} \
+            --set deployment.image.uri=${{ needs.build-push.outputs.image_uri }} \
+            --wait --timeout=5m
+
+  # ----------------------------------
+  # JOB 7: Init DB (QA)
+  # ----------------------------------
+  # This job executes the backend.sql script to create database
+  # objects (tables, views, etc.) in the QA environment.
+  init-db-qa:
+    name: Initialize DB (QA)
+    needs: [deploy-qa]
+    runs-on: csec-self-hosted
+    environment: app-qa
+
+    env:
+      AWS_REGION: ap-southeast-1
+      KUBE_CONFIG_BUCKET: csec-qa-k8s-config
+      NAMESPACE: csb-qa
+      DB_NAME: csb_app_db
+      DB_APP_USER: csb_app
+      DB_LABEL: app.kubernetes.io/name=csb-postgres-service
+
+    container:
+      image: ${{ vars.GH_RUNNER_IMAGE }}
+      credentials:
+        username: ${{ secrets.GH_USER }}
+        password: ${{ secrets.GH_TOKEN }}
+
+    steps:
+      # ----------------------
+      # Step 1: Code Checkout
+      # ----------------------
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # ----------------------------------
+      # Step 2: Configure AWS Credentials
+      # ----------------------------------
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: "arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/${{ secrets.AWS_OIDC_ROLE }}"
+          role-skip-session-tagging: true
+
+      # ----------------------------------
+      # Step 3: Retrieve Kubeconfig
+      # ----------------------------------
+      - name: Retrieve Kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          aws s3 cp s3://${{ env.KUBE_CONFIG_BUCKET }}/config ~/.kube/config
+
+      # ----------------------------------
+      # Step 4: Execute Backend SQL
+      # ----------------------------------
+      - name: Execute Backend SQL
+        run: |
+          # Get the Pod Name
+          POD_NAME=$(kubectl get pods -n ${{ env.NAMESPACE }} -l ${{ env.DB_LABEL }} -o jsonpath='{.items[0].metadata.name}')
+
+          echo "Executing backend.sql on pod: $POD_NAME"
+
+          # Copy SQL file to pod
+          kubectl cp ${{ env.SERVICE_PATH }}/sql/backend.sql ${{ env.NAMESPACE }}/$POD_NAME:/tmp/backend.sql
+
+          # Execute SQL
+          kubectl exec -n ${{ env.NAMESPACE }} $POD_NAME -- \
+            env PGPASSWORD='${{ secrets.CSB_APP_USER_PSWD }}' \
+            psql -U ${{ env.DB_APP_USER }} -d ${{ env.DB_NAME }} -f /tmp/backend.sql
+
+  # ----------------------------------
+  # JOB 8: Verify QA
+  # ----------------------------------
+  # This job performs post-deployment validation to ensure
+  # the service is running in the QA cluster.
+  verify-qa:
+    name: Verify Service (QA)
+    needs: [init-db-qa]
+    runs-on: csec-self-hosted
+    environment: app-qa
+
+    env:
+      AWS_REGION: ap-southeast-1
+      KUBE_CONFIG_BUCKET: csec-qa-k8s-config
+      NAMESPACE: csb-qa
+      HELM_RELEASE_NAME: csb-api-rel
+
+    container:
+      image: ${{ vars.GH_RUNNER_IMAGE }}
+      credentials:
+        username: ${{ secrets.GH_USER }}
+        password: ${{ secrets.GH_TOKEN }}
+
+    steps:
+      # ----------------------------------
+      # Step 1: Configure AWS Credentials
+      # ----------------------------------
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: "arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/${{ secrets.AWS_OIDC_ROLE }}"
+          role-skip-session-tagging: true
+
+      # ----------------------------------
+      # Step 2: Retrieve Kubeconfig
+      # ----------------------------------
+      - name: Retrieve Kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          aws s3 cp s3://${{ env.KUBE_CONFIG_BUCKET }}/config ~/.kube/config
+
+      # ----------------------------------
+      # Step 3: Validate Helm Release
+      # ----------------------------------
+      - name: Validate Helm Release
+        run: |
+          helm list -n ${{ env.NAMESPACE }} | grep ${{ env.HELM_RELEASE_NAME }}
+
+      # ----------------------------------
+      # Step 4: Validate Pod Status
+      # ----------------------------------
+      - name: Validate Pod Status
+        run: |
+          kubectl get pods -n ${{ env.NAMESPACE }} -l app.kubernetes.io/instance=${{ env.HELM_RELEASE_NAME }} | grep Running
