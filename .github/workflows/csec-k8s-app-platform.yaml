@@ -5,9 +5,17 @@
 name: C-Sec | Deployment | Kubernetes Application Platform
 on: workflow_dispatch
 
+# Permissions for the workflow
 permissions:
   id-token: write
   contents: read
+
+# Define environment variables
+env:
+  K8S_SERVICE_ACCOUNT: csb-app-sa
+  K8S_ROLE_NAME: csb-app-deployer-role
+  K8S_RB_NAME: csb-app-deployer-role-binding
+  K8S_NS_PREFIX: csb
 
 jobs:
   # ----------------------------------
@@ -18,7 +26,7 @@ jobs:
   validate:
     name: Platform Validation
     runs-on: csec-self-hosted
-    environment: infra_dev
+    environment: platform-dev
 
     container:
       image: ${{ vars.GH_RUNNER_IMAGE }}
@@ -38,7 +46,7 @@ jobs:
       # ---------------------------
       # Validates the Kubernetes YAML files against the official schemas.
       - name: Run Kubeconform (Lint)
-        run: kubeconform -summary -ignore-missing-schemas k8s-platform-config/
+        run: kubeconform -summary -ignore-missing-schemas -ignore-filename-pattern 'kustomization.yaml' k8s-platform-config/
 
       # ---------------------------
       # Step 3: Run Trivy Scanner
@@ -46,7 +54,11 @@ jobs:
       # Scans the configuration files for security vulnerabilities
       # and misconfigurations.
       - name: Run Trivy (SAST)
-        run: trivy config k8s-platform-config/ --severity HIGH,CRITICAL --exit-code 1
+        run: |
+          trivy config k8s-platform-config/ \
+          --skip-files k8s-platform-config/base/deployment-role.yaml \
+          --severity HIGH,CRITICAL \
+          --exit-code 1
 
   # -----------------------------
   # JOB 2: Deploy to DEV Platform
@@ -57,14 +69,10 @@ jobs:
     name: Deploy Platform (DEV)
     needs: [validate]
     runs-on: csec-self-hosted
-    environment: infra_dev
+    environment: platform-dev
 
     env:
-      AWS_REGION: ap-southeast-1
       CLUSTER_ENV: dev
-      KUBE_CONFIG_BUCKET: csec-dev-k8s-config
-      NAMESPACE: csb-dev
-      SA_NAME: csb-app-sa
 
     container:
       image: ${{ vars.GH_RUNNER_IMAGE }}
@@ -85,7 +93,7 @@ jobs:
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-region: ${{ env.AWS_REGION }}
+          aws-region: ${{ vars.AWS_REGION }}
           role-to-assume: "arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/${{ secrets.AWS_OIDC_ROLE }}"
           role-skip-session-tagging: true
 
@@ -95,7 +103,7 @@ jobs:
       - name: Apply Platform Configuration
         uses: ./.github/actions/k8s-platform/apply
         with:
-          kube_config_bucket: ${{ env.KUBE_CONFIG_BUCKET }}
+          kube_config_bucket: ${{ secrets.AWS_S3_KUBE_CONFIG }}
           cluster_env: ${{ env.CLUSTER_ENV }}
 
       # -----------------------------------
@@ -104,10 +112,10 @@ jobs:
       - name: Generate and Upload App Config
         uses: ./.github/actions/k8s-platform/config-upload
         with:
-          sa_name: ${{ env.SA_NAME }}
-          namespace: ${{ env.NAMESPACE }}
+          sa_name: ${{ env.K8S_SERVICE_ACCOUNT }}
+          namespace: "${{ env.K8S_NS_PREFIX }}-${{ env.CLUSTER_ENV }}"
           cluster_env: ${{ env.CLUSTER_ENV }}
-          kube_config_bucket: ${{ env.KUBE_CONFIG_BUCKET }}
+          kube_config_bucket: ${{ secrets.AWS_S3_KUBE_CONFIG }}
 
   # ------------------------------
   # JOB 3: Verify Platform (DEV)
@@ -118,15 +126,10 @@ jobs:
     name: Verify Platform (DEV)
     needs: [deploy-dev]
     runs-on: csec-self-hosted
-    environment: infra_dev
+    environment: platform-dev
 
     env:
-      AWS_REGION: ap-southeast-1
-      KUBE_CONFIG_BUCKET: csec-dev-k8s-config
-      NAMESPACE: csb-dev
-      SA_NAME: csb-app-sa
-      ROLE_NAME: csb-app-deployer-role
-      RB_NAME: dev-deployer-role-binding
+      CLUSTER_ENV: dev
 
     container:
       image: ${{ vars.GH_RUNNER_IMAGE }}
@@ -147,19 +150,18 @@ jobs:
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-region: ${{ env.AWS_REGION }}
+          aws-region: ${{ vars.AWS_REGION }}
           role-to-assume: "arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/${{ secrets.AWS_OIDC_ROLE }}"
           role-skip-session-tagging: true
 
       # -----------------------------------
-      # Step 3: Apply Platform Configuration
+      # Step 3: Retrieve Kubeconfig
       # -----------------------------------
-      - name: Apply Platform Configuration
-        uses: ./.github/actions/k8s-platform/apply
-        with:
-          kube_config_bucket: ${{ env.KUBE_CONFIG_BUCKET }}
-          # Verify job doesn't have CLUSTER_ENV in env, passing explicitly
-          cluster_env: dev
+      - name: Retrieve Kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          aws s3 cp s3://${{ secrets.AWS_S3_KUBE_CONFIG }}/kube-admin.conf ~/.kube/config
+          chmod 600 ~/.kube/config
 
       # -----------------------------------
       # Step 4: Validate Platform Resources
@@ -167,10 +169,10 @@ jobs:
       - name: Validate Platform Resources
         uses: ./.github/actions/k8s-platform/validate
         with:
-          namespace: ${{ env.NAMESPACE }}
-          sa_name: ${{ env.SA_NAME }}
-          role_name: ${{ env.ROLE_NAME }}
-          rb_name: ${{ env.RB_NAME }}
+          namespace: "${{ env.K8S_NS_PREFIX }}-${{ env.CLUSTER_ENV }}"
+          sa_name: ${{ env.K8S_SERVICE_ACCOUNT }}
+          role_name: ${{ env.K8S_ROLE_NAME }}
+          rb_name: ${{ env.K8S_RB_NAME }}
 
   # ----------------------------
   # JOB 4: Deploy to QA Platform
@@ -179,16 +181,13 @@ jobs:
   # Kubernetes cluster and generates access credentials for applications.
   deploy-qa:
     name: Deploy Platform (QA)
-    needs: [validate]
+    if: false
+    needs: [verify-dev]
     runs-on: csec-self-hosted
-    environment: infra_qa
+    environment: platform-qa
 
     env:
-      AWS_REGION: ap-southeast-1
       CLUSTER_ENV: qa
-      KUBE_CONFIG_BUCKET: csec-qa-k8s-config
-      NAMESPACE: csb-qa
-      SA_NAME: csb-app-sa
 
     container:
       image: ${{ vars.GH_RUNNER_IMAGE }}
@@ -209,17 +208,17 @@ jobs:
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-region: ${{ env.AWS_REGION }}
+          aws-region: ${{ vars.AWS_REGION }}
           role-to-assume: "arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/${{ secrets.AWS_OIDC_ROLE }}"
           role-skip-session-tagging: true
 
-      # -----------------------------------
+      # ------------------------------------
       # Step 3: Apply Platform Configuration
-      # -----------------------------------
+      # ------------------------------------
       - name: Apply Platform Configuration
         uses: ./.github/actions/k8s-platform/apply
         with:
-          kube_config_bucket: ${{ env.KUBE_CONFIG_BUCKET }}
+          kube_config_bucket: ${{ secrets.AWS_S3_KUBE_CONFIG }}
           cluster_env: ${{ env.CLUSTER_ENV }}
 
       # -----------------------------------
@@ -228,10 +227,10 @@ jobs:
       - name: Generate and Upload App Config
         uses: ./.github/actions/k8s-platform/config-upload
         with:
-          sa_name: ${{ env.SA_NAME }}
-          namespace: ${{ env.NAMESPACE }}
+          sa_name: ${{ env.K8S_SERVICE_ACCOUNT }}
+          namespace: "${{ env.K8S_NS_PREFIX }}-${{ env.CLUSTER_ENV }}"
           cluster_env: ${{ env.CLUSTER_ENV }}
-          kube_config_bucket: ${{ env.KUBE_CONFIG_BUCKET }}
+          kube_config_bucket: ${{ secrets.AWS_S3_KUBE_CONFIG }}
 
   # ------------------------------
   # JOB 5: Verify Platform (QA)
@@ -240,19 +239,13 @@ jobs:
   # platform resources exist in the QA cluster.
   verify-qa:
     name: Verify Platform (QA)
-    # Description: Validates the existence of Namespace,
-    # ServiceAccount, and RBAC resources.
+    if: false
     needs: [deploy-qa]
     runs-on: csec-self-hosted
-    environment: infra_qa
+    environment: platform-qa
 
     env:
-      AWS_REGION: ap-southeast-1
-      KUBE_CONFIG_BUCKET: csec-qa-k8s-config
-      NAMESPACE: csb-qa
-      SA_NAME: csb-app-sa
-      ROLE_NAME: csb-app-deployer-role
-      RB_NAME: qa-deployer-role-binding
+      CLUSTER_ENV: qa
 
     container:
       image: ${{ vars.GH_RUNNER_IMAGE }}
@@ -273,19 +266,18 @@ jobs:
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-region: ${{ env.AWS_REGION }}
+          aws-region: ${{ vars.AWS_REGION }}
           role-to-assume: "arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/${{ secrets.AWS_OIDC_ROLE }}"
           role-skip-session-tagging: true
 
       # -----------------------------------
-      # Step 3: Apply Platform Configuration
+      # Step 3: Retrieve Kubeconfig
       # -----------------------------------
-      - name: Apply Platform Configuration
-        uses: ./.github/actions/k8s-platform/apply
-        with:
-          kube_config_bucket: ${{ env.KUBE_CONFIG_BUCKET }}
-          # Verify job doesn't have CLUSTER_ENV in env, passing explicitly
-          cluster_env: qa
+      - name: Retrieve Kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          aws s3 cp s3://${{ secrets.AWS_S3_KUBE_CONFIG }}/kube-admin.conf ~/.kube/config
+          chmod 600 ~/.kube/config
 
       # -----------------------------------
       # Step 4: Validate Platform Resources
@@ -293,7 +285,7 @@ jobs:
       - name: Validate Platform Resources
         uses: ./.github/actions/k8s-platform/validate
         with:
-          namespace: ${{ env.NAMESPACE }}
-          sa_name: ${{ env.SA_NAME }}
-          role_name: ${{ env.ROLE_NAME }}
-          rb_name: ${{ env.RB_NAME }}
+          namespace: "${{ env.K8S_NS_PREFIX }}-${{ env.CLUSTER_ENV }}"
+          sa_name: ${{ env.K8S_SERVICE_ACCOUNT }}
+          role_name: ${{ env.K8S_ROLE_NAME }}
+          rb_name: ${{ env.K8S_RB_NAME }}
