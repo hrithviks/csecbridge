@@ -1,10 +1,9 @@
 # -----------------------------------------------------------------------------
-# Action  : .github/actions/k8s-platform/config-upload/action.yaml
-# Purpose : Composite action to generate a restricted ServiceAccount token,
-#           create a kubeconfig file, and upload it to S3 for application use.
+# Script  : .github/actions/k8s-platform/config-upload/action.yaml
+# Purpose : Generates a kubeconfig for the application service account and uploads it to S3
 # -----------------------------------------------------------------------------
 name: "Generate and Upload App Config"
-description: "Generates SA token, creates kubeconfig, and uploads to S3"
+description: "Generates a kubeconfig for the application service account and uploads it to S3"
 inputs:
   sa_name:
     description: "Service Account Name"
@@ -13,55 +12,68 @@ inputs:
     description: "Namespace"
     required: true
   cluster_env:
-    description: "Cluster Environment"
+    description: "Cluster Environment (dev/qa/prod)"
     required: true
   kube_config_bucket:
-    description: "S3 Bucket for config storage"
+    description: "S3 Bucket for Kubeconfig"
     required: true
+
 runs:
   using: "composite"
   steps:
-    # ---------------------------------------
-    # Step 1: Generate Service Account Token
-    # ---------------------------------------
+    # ---------------------------------------------
+    # Step 1: Retrieve Cluster Information
+    # ---------------------------------------------
+    - name: Retrieve Cluster Info
+      shell: bash
+      run: |
+        echo "Retrieving cluster information..."
+        SERVER=$(kubectl config view --minify --raw -o jsonpath='{.clusters[0].cluster.server}')
+        CA_DATA=$(kubectl config view --minify --raw -o jsonpath='{.clusters[0].cluster.certificate-authority-data}')
+
+        echo "SERVER=$SERVER" >> $GITHUB_ENV
+        echo "CA_DATA=$CA_DATA" >> $GITHUB_ENV
+
+    # ---------------------------------------------
+    # Step 2: Generate Service Account Token
+    # ---------------------------------------------
     - name: Generate Service Account Token
       shell: bash
       run: |
-        echo "Generating token for ServiceAccount: ${{ inputs.sa_name }}"
+        echo "Generating token for ${{ inputs.sa_name }}..."
         TOKEN=$(kubectl create token ${{ inputs.sa_name }} -n ${{ inputs.namespace }} --duration=8760h)
-        echo "::add-mask::$TOKEN"
-        echo "SA_TOKEN=$TOKEN" >> $GITHUB_ENV
+        echo "TOKEN=$TOKEN" >> $GITHUB_ENV
 
-    # -----------------------------------
-    # Step 2: Extract Cluster Information
-    # -----------------------------------
-    - name: Extract Cluster Information
+    # ---------------------------------------------
+    # Step 3: Process Template
+    # ---------------------------------------------
+    - name: Generate Kubeconfig File
       shell: bash
       run: |
-        SERVER=$(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}')
-        CA_DATA=$(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.certificate-authority-data}')
-        echo "CLUSTER_SERVER=$SERVER" >> $GITHUB_ENV
-        echo "CLUSTER_CA_DATA=$CA_DATA" >> $GITHUB_ENV
+        echo "Processing template..."
+        CLUSTER_NAME="csec-${{ inputs.cluster_env }}"
+        USER_NAME="${{ inputs.sa_name }}"
+        CONTEXT_NAME="${CLUSTER_NAME}"
+        NAMESPACE="${{ inputs.namespace }}"
 
-    # -----------------------------------
-    # Step 3: Render App Kubeconfig
-    # -----------------------------------
-    - name: Render App Kubeconfig
+        # Use sed to replace placeholders and write to generated-config.yaml
+        sed -e "s|name_placeholder|$CLUSTER_NAME|g" \
+            -e "s|ca_data_placeholder|$CA_DATA|g" \
+            -e "s|server_placeholder|$SERVER|g" \
+            -e "s|user_name_placeholder|$USER_NAME|g" \
+            -e "s|user_token_placeholder|$TOKEN|g" \
+            -e "s|context_name_placeholder|$CONTEXT_NAME|g" \
+            -e "s|context_cluster_placeholder|$CLUSTER_NAME|g" \
+            -e "s|context_ns_placeholder|$NAMESPACE|g" \
+            -e "s|context_user_placeholder|$USER_NAME|g" \
+            -e "s|current_context_placeholder|$CONTEXT_NAME|g" \
+            k8s-templates/app-kubeconfig-template.yaml > generated-config.yaml
+
+    # ---------------------------------------------
+    # Step 4: Upload to S3
+    # ---------------------------------------------
+    - name: Upload to S3
       shell: bash
       run: |
-        sed -e "s|{{CLUSTER_ENV}}|${{ inputs.cluster_env }}|g" \
-            -e "s|{{NAMESPACE}}|${{ inputs.namespace }}|g" \
-            -e "s|{{SA_NAME}}|${{ inputs.sa_name }}|g" \
-            -e "s|{{CA_DATA}}|${CLUSTER_CA_DATA}|g" \
-            -e "s|{{SERVER}}|${CLUSTER_SERVER}|g" \
-            -e "s|{{TOKEN}}|${SA_TOKEN}|g" \
-            .github/workflows/app-kubeconfig.yaml.tpl > app-kubeconfig
-
-    # -----------------------------------
-    # Step 4: Upload App Kubeconfig
-    # -----------------------------------
-    - name: Upload App Kubeconfig to S3
-      shell: bash
-      run: |
-        echo "Uploading app-kubeconfig to s3://${{ inputs.kube_config_bucket }}/app-kubeconfig"
-        aws s3 cp app-kubeconfig s3://${{ inputs.kube_config_bucket }}/app-kubeconfig
+        echo "Uploading config to s3://${{ inputs.kube_config_bucket }}/config"
+        aws s3 cp generated-config.yaml s3://${{ inputs.kube_config_bucket }}/config
