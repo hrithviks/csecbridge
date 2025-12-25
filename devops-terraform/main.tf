@@ -12,10 +12,14 @@ data "aws_region" "current" {}
 
 locals {
   RESOURCE_PREFIX = "${var.main_project_prefix}-devops"
-  ENVIRONMENTS    = toset(["dev", "qa", "prod"])
   ACCOUNT_ID      = data.aws_caller_identity.current.account_id
   REGION          = data.aws_region.current.id
   PROJECT_PREFIX  = var.main_project_prefix
+
+  # Environments
+  INFRA_ENVS    = toset(["infra-dev", "infra-qa", "infra-prod"])
+  PLATFORM_ENVS = toset(["platform-dev", "platform-qa", "platform-prod"])
+  API_APP_ENVS  = toset(["api-app-dev", "api-app-qa", "api-app-prod"])
 
   # Resource Names
   VPC_NAME           = "${local.RESOURCE_PREFIX}-vpc"
@@ -77,14 +81,15 @@ resource "aws_internet_gateway" "devops_igw" {
 resource "aws_route_table" "devops_public_rt" {
   vpc_id = aws_vpc.devops_vpc.id
 
-  route {
-    cidr_block = "0.0.0.0/0"
-    gateway_id = aws_internet_gateway.devops_igw.id
-  }
-
   tags = {
     Name = local.PUBLIC_RT_NAME
   }
+}
+
+resource "aws_route" "devops_public_internet_access" {
+  route_table_id         = aws_route_table.devops_public_rt.id
+  destination_cidr_block = "0.0.0.0/0"
+  gateway_id             = aws_internet_gateway.devops_igw.id
 }
 
 resource "aws_route_table_association" "devops_public_rta" {
@@ -185,15 +190,15 @@ resource "aws_instance" "devops_runner" {
 }
 
 /*
-* ------------------------------------
-* IAM ROLES FOR ENVIRONMENT DEPLOYMENT
-* ------------------------------------
-* Creates distinct IAM roles for each environment (dev, qa, prod).
-* These roles are assumed by the runner to perform deployments, ensuring
-* isolation and least privilege based on resource tagging.
+* -------------------------------------------
+* IAM ROLES FOR K8S CLUSTER(INFRA) DEPLOYMENT
+* -------------------------------------------
+* Creates distinct IAM roles for each infra environment.
+* These roles are assumed by the workflow(OIDC) to perform deployments, 
+* ensuring isolation and least privilege based on resource tagging.
 */
 resource "aws_iam_role" "environment_roles" {
-  for_each = local.ENVIRONMENTS
+  for_each = local.INFRA_ENVS
 
   name = "${local.ROLE_NAME_PREFIX}-${each.key}"
 
@@ -222,7 +227,7 @@ resource "aws_iam_role" "environment_roles" {
 }
 
 resource "aws_iam_role_policy" "environment_policies" {
-  for_each = local.ENVIRONMENTS
+  for_each = local.INFRA_ENVS
 
   name = "${local.POLICY_NAME_PREFIX}-${each.key}"
   role = aws_iam_role.environment_roles[each.key].id
@@ -235,5 +240,80 @@ resource "aws_iam_role_policy" "environment_policies" {
     access_bucket  = "csec-app-access-logs"
     configbucket   = "csec-${each.key}-k8s-config"
     project_prefix = local.PROJECT_PREFIX
+  })
+}
+
+/*
+* -------------------------------------
+* IAM ROLES FOR K8S PLATFORM DEPLOYMENT
+* -------------------------------------
+* Creates distinct IAM roles for each platform environment.
+* These roles are assumed by the workflow(OIDC) to perform deployments, 
+* ensuring isolation and least privilege based on resource tagging.
+*/
+resource "aws_iam_role" "platform_roles" {
+  for_each = local.PLATFORM_ENVS
+
+  name = "${local.ROLE_NAME_PREFIX}-${each.key}"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRoleWithWebIdentity"
+        Effect = "Allow"
+        Principal = {
+          Federated = aws_iam_openid_connect_provider.github.arn
+        }
+        Condition = {
+          StringEquals = {
+            "token.actions.githubusercontent.com:sub" = "repo:${var.github_repository}:environment:${each.key}"
+            "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
+          }
+        }
+      }
+    ]
+  })
+
+  tags = {
+    Environment = each.key
+  }
+}
+
+resource "aws_iam_role_policy" "platform_policies" {
+  for_each = local.PLATFORM_ENVS
+
+  name = "${local.POLICY_NAME_PREFIX}-${each.key}"
+  role = aws_iam_role.platform_roles[each.key].id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = "sts:GetCallerIdentity"
+        Resource = "*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "s3:ListBucket",
+          "s3:GetObject",
+          "s3:PutObject"
+        ]
+        Resource = [
+          "arn:aws:s3:::csec-dev-k8s-config",
+          "arn:aws:s3:::csec-dev-k8s-config/*"
+        ]
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "kms:Decrypt",
+          "kms:GenerateDataKey"
+        ]
+        Resource = "arn:aws:kms:${local.REGION}:${local.ACCOUNT_ID}:key/*"
+      }
+    ]
   })
 }
