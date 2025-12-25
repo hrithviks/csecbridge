@@ -1,0 +1,58 @@
+# -----------------------------------------------------------------------------
+# Script  : .github/workflows/csec-devops.yaml
+# Purpose : Workflow to validate the DevOps environment and repository health
+# -----------------------------------------------------------------------------
+name: C-Sec | DevOps | General Validation
+on: workflow_dispatch
+
+permissions:
+  contents: read
+
+jobs:
+  # ----------------------------------
+  # JOB 1: Environment & Code Scan
+  # ----------------------------------
+  # This job verifies the runtime environment on GitHub-hosted runners
+  # using the custom image, and performs a general security scan.
+  validate-env:
+    name: Validate Environment
+    runs-on: ubuntu-latest
+
+    container:
+      image: ${{ vars.GH_RUNNER_IMAGE }}
+      credentials:
+        username: ${{ secrets.GH_USER }}
+        password: ${{ secrets.GH_TOKEN }}
+
+    steps:
+      # ----------------------
+      # Step 1: Code Checkout
+      # ----------------------
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # ----------------------
+      # Step 2: Verify Tools
+      # ----------------------
+      - name: Verify DevOps Tools
+        run: |
+          echo "--- AWS CLI ---"
+          aws --version
+          echo "--- Terraform ---"
+          terraform --version
+          echo "--- Helm ---"
+          helm version --short
+          echo "--- Kubectl ---"
+          kubectl version --client
+          echo "--- Python ---"
+          python --version
+
+      # ---------------------------
+      # Step 3: Run Trivy (FS Scan)
+      # ---------------------------
+      - name: Run Trivy (Repo Scan)
+        run: |
+          trivy fs . \
+            --scanners config,vuln \
+            --severity HIGH,CRITICAL \
+            --exit-code 0
