@@ -28,8 +28,8 @@ runs:
     - name: Download Admin Kubeconfig
       shell: bash
       run: |
-        echo "Downloading admin kubeconfig from s3://${{ inputs.kube_config_bucket }}/admin.conf"
-        aws s3 cp s3://${{ inputs.kube_config_bucket }}/admin.conf ~/.kube/config
+        echo "Downloading admin kubeconfig from s3://${{ inputs.kube_config_bucket }}/kube-admin.conf"
+        aws s3 cp s3://${{ inputs.kube_config_bucket }}/kube-admin.conf ~/.kube/config
         chmod 600 ~/.kube/config
 
     # -----------------------------------
