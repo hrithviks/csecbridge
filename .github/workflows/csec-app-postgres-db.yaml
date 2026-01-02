@@ -1,7 +1,21 @@
-# -----------------------------------------------------------------------------
-# Script  : .github/workflows/csec-app-postgres-db.yaml
-# Purpose : Workflow to build and deploy the Postgres DB Service for cSecBridge
-# -----------------------------------------------------------------------------
+# -------------------------------------------------------------------------------
+# Workflow : .github/workflows/csec-app-postgres-db.yaml
+# Purpose  : Workflow to build and deploy the Postgres DB Service for cSecBridge
+#
+# Summary  :
+#   1. Validation
+#      - Code Checkout, Trivy (FS Scan)
+#   2. Build & Push
+#      - Code Checkout, Build Image, Trivy (Image Scan), Push to Registry
+#   3. Deploy to DEV
+#      - Code Checkout, Configure AWS, Retrieve Kubeconfig, Deploy Helm Chart
+#   4. Verify & Configure DEV
+#      - Configure AWS, Retrieve Kubeconfig, Validate Status, Rotate Passwords
+#   5. Deploy to QA
+#      - Code Checkout, Configure AWS, Retrieve Kubeconfig, Deploy Helm Chart
+#   6. Verify & Configure QA
+#      - Configure AWS, Retrieve Kubeconfig, Validate Status, Rotate Passwords
+# -------------------------------------------------------------------------------
 name: C-Sec | Deployment | Postgres DB Service
 on: workflow_dispatch
 
@@ -17,8 +31,8 @@ jobs:
   # ----------------------------------
   # JOB 1: Validation (Linting & SAST)
   # ----------------------------------
-  # This job performs static code analysis and security scanning
-  # on the database service configuration and source files.
+  # Static code analysis and security scanning are performed on the database
+  # service configuration to identify vulnerabilities early (Shift-Left).
   validate:
     name: Service Validation
     runs-on: csec-self-hosted
@@ -31,9 +45,9 @@ jobs:
         password: ${{ secrets.GH_TOKEN }}
 
     steps:
-      # ----------------------
+      # ---------------------
       # Step 1: Code Checkout
-      # ----------------------
+      # ---------------------
       - name: Checkout Code
         uses: actions/checkout@v4
 
@@ -47,9 +61,9 @@ jobs:
             --severity HIGH,CRITICAL \
             --exit-code 1
 
-  # ----------------------------------
+  # -------------------------
   # JOB 2: Build & Push Image
-  # ----------------------------------
+  # -------------------------
   # This job builds the Docker image for the DB service, scans it
   # for vulnerabilities, and pushes it to the container registry.
   build-push:
@@ -68,30 +82,30 @@ jobs:
       image_uri: ${{ steps.image-def.outputs.uri }}
 
     steps:
-      # ----------------------
+      # ---------------------
       # Step 1: Code Checkout
-      # ----------------------
+      # ---------------------
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      # ----------------------
+      # ------------------------
       # Step 2: Define Image URI
-      # ----------------------
+      # ------------------------
       - name: Define Image URI
         id: image-def
         run: |
           echo "uri=ghcr.io/${{ secrets.GH_USER }}/${{ env.IMAGE_NAME }}:${{ github.sha }}" >> $GITHUB_OUTPUT
 
-      # ----------------------
+      # -------------------
       # Step 3: Build Image
-      # ----------------------
+      # -------------------
       - name: Build Docker Image
         run: |
           docker build -t ${{ steps.image-def.outputs.uri }} ${{ env.SERVICE_PATH }}
 
-      # ----------------------
+      # ------------------
       # Step 4: Scan Image
-      # ----------------------
+      # ------------------
       - name: Run Trivy (Image Scan)
         run: |
           trivy image ${{ steps.image-def.outputs.uri }} \
@@ -99,24 +113,24 @@ jobs:
             --severity HIGH,CRITICAL \
             --exit-code 1
 
-      # ----------------------
+      # -----------------------
       # Step 5: Login to Registry
-      # ----------------------
+      # -----------------------
       - name: Login to GitHub Container Registry
         run: |
           echo "${{ secrets.GH_TOKEN }}" | docker login ghcr.io -u ${{ secrets.GH_USER }} --password-stdin
 
-      # ----------------------
+      # ------------------
       # Step 6: Push Image
-      # ----------------------
+      # ------------------
       - name: Push Docker Image
         run: docker push ${{ steps.image-def.outputs.uri }}
 
-  # ----------------------------------
+  # --------------------
   # JOB 3: Deploy to DEV
-  # ----------------------------------
-  # This job deploys the DB service Helm chart to the Development
-  # Kubernetes cluster.
+  # --------------------
+  # The DB service Helm chart is deployed to the Development Kubernetes cluster.
+  # Helm is utilized for package management to ensure consistent deployments.
   deploy-dev:
     name: Deploy Service (DEV)
     needs: [build-push]
@@ -136,9 +150,9 @@ jobs:
         password: ${{ secrets.GH_TOKEN }}
 
     steps:
-      # ----------------------
+      # ---------------------
       # Step 1: Code Checkout
-      # ----------------------
+      # ---------------------
       - name: Checkout Code
         uses: actions/checkout@v4
 
@@ -152,17 +166,17 @@ jobs:
           role-to-assume: "arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/${{ secrets.AWS_OIDC_ROLE }}"
           role-skip-session-tagging: true
 
-      # ----------------------------------
+      # ---------------------------
       # Step 3: Retrieve Kubeconfig
-      # ----------------------------------
+      # ---------------------------
       - name: Retrieve Kubeconfig
         run: |
           mkdir -p ~/.kube
           aws s3 cp s3://${{ env.KUBE_CONFIG_BUCKET }}/config ~/.kube/config
 
-      # ----------------------------------
+      # -------------------------
       # Step 4: Deploy Helm Chart
-      # ----------------------------------
+      # -------------------------
       - name: Deploy Helm Chart
         run: |
           helm upgrade --install ${{ env.HELM_RELEASE_NAME }} ${{ env.SERVICE_PATH }}/helm \
@@ -170,11 +184,11 @@ jobs:
             --set statefulset.image.uri=${{ needs.build-push.outputs.image_uri }} \
             --wait --timeout=5m
 
-  # ----------------------------------
+  # ---------------------------
   # JOB 4: Verify & Configure DEV
-  # ----------------------------------
-  # This job performs post-deployment validation, rotates database
-  # passwords, and syncs them to AWS Secrets Manager.
+  # ---------------------------
+  # Post-deployment validation, password rotation, and secret synchronization
+  # are executed to ensure the database is secure and operational.
   verify-dev:
     name: Verify & Configure (DEV)
     needs: [deploy-dev]
@@ -206,31 +220,31 @@ jobs:
           role-to-assume: "arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/${{ secrets.AWS_OIDC_ROLE }}"
           role-skip-session-tagging: true
 
-      # ----------------------------------
+      # ---------------------------
       # Step 2: Retrieve Kubeconfig
-      # ----------------------------------
+      # ---------------------------
       - name: Retrieve Kubeconfig
         run: |
           mkdir -p ~/.kube
           aws s3 cp s3://${{ env.KUBE_CONFIG_BUCKET }}/config ~/.kube/config
 
-      # ----------------------------------
+      # ---------------------------
       # Step 3: Validate Helm Release
-      # ----------------------------------
+      # ---------------------------
       - name: Validate Helm Release
         run: |
           helm list -n ${{ env.NAMESPACE }} | grep ${{ env.HELM_RELEASE_NAME }}
 
-      # ----------------------------------
+      # -------------------------
       # Step 4: Validate Pod Status
-      # ----------------------------------
+      # -------------------------
       - name: Validate Pod Status
         run: |
           kubectl get pods -n ${{ env.NAMESPACE }} -l app.kubernetes.io/instance=${{ env.HELM_RELEASE_NAME }} | grep Running
 
-      # ----------------------------------
+      # ---------------------------
       # Step 5: Rotate DB Passwords
-      # ----------------------------------
+      # ---------------------------
       - name: Rotate Database Roles Passwords
         run: |
           # Get the Pod Name
@@ -249,9 +263,9 @@ jobs:
           exec_sql "ALTER ROLE csb_aws_user WITH PASSWORD '${{ secrets.CSB_AWS_USER_PSWD }}';"
           exec_sql "ALTER ROLE csb_azure_user WITH PASSWORD '${{ secrets.CSB_AZURE_USER_PSWD }}';"
 
-      # ----------------------------------
+      # -----------------------------
       # Step 6: Upload to AWS Secrets
-      # ----------------------------------
+      # -----------------------------
       - name: Upload Passwords to AWS Secrets Manager
         run: |
           # Helper function to create or update secret
@@ -268,11 +282,11 @@ jobs:
           upload_secret "${{ env.NAMESPACE }}/db/csb_aws_user" "${{ secrets.CSB_AWS_USER_PSWD }}"
           upload_secret "${{ env.NAMESPACE }}/db/csb_azure_user" "${{ secrets.CSB_AZURE_USER_PSWD }}"
 
-  # ----------------------------------
+  # -------------------
   # JOB 5: Deploy to QA
-  # ----------------------------------
-  # This job deploys the DB service Helm chart to the QA
-  # Kubernetes cluster.
+  # -------------------
+  # The DB service Helm chart is deployed to the QA Kubernetes cluster,
+  # maintaining configuration consistency across environments.
   deploy-qa:
     name: Deploy Service (QA)
     needs: [build-push, verify-dev]
@@ -292,9 +306,9 @@ jobs:
         password: ${{ secrets.GH_TOKEN }}
 
     steps:
-      # ----------------------
+      # ---------------------
       # Step 1: Code Checkout
-      # ----------------------
+      # ---------------------
       - name: Checkout Code
         uses: actions/checkout@v4
 
@@ -308,17 +322,17 @@ jobs:
           role-to-assume: "arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/${{ secrets.AWS_OIDC_ROLE }}"
           role-skip-session-tagging: true
 
-      # ----------------------------------
+      # ---------------------------
       # Step 3: Retrieve Kubeconfig
-      # ----------------------------------
+      # ---------------------------
       - name: Retrieve Kubeconfig
         run: |
           mkdir -p ~/.kube
           aws s3 cp s3://${{ env.KUBE_CONFIG_BUCKET }}/config ~/.kube/config
 
-      # ----------------------------------
+      # -------------------------
       # Step 4: Deploy Helm Chart
-      # ----------------------------------
+      # -------------------------
       - name: Deploy Helm Chart
         run: |
           helm upgrade --install ${{ env.HELM_RELEASE_NAME }} ${{ env.SERVICE_PATH }}/helm \
@@ -326,11 +340,11 @@ jobs:
             --set statefulset.image.uri=${{ needs.build-push.outputs.image_uri }} \
             --wait --timeout=5m
 
-  # ----------------------------------
+  # --------------------------
   # JOB 6: Verify & Configure QA
-  # ----------------------------------
-  # This job performs post-deployment validation, rotates database
-  # passwords, and syncs them to AWS Secrets Manager.
+  # --------------------------
+  # Post-deployment validation, password rotation, and secret synchronization
+  # are executed to ensure the database is secure and operational.
   verify-qa:
     name: Verify & Configure (QA)
     needs: [deploy-qa]
@@ -362,31 +376,31 @@ jobs:
           role-to-assume: "arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/${{ secrets.AWS_OIDC_ROLE }}"
           role-skip-session-tagging: true
 
-      # ----------------------------------
+      # ---------------------------
       # Step 2: Retrieve Kubeconfig
-      # ----------------------------------
+      # ---------------------------
       - name: Retrieve Kubeconfig
         run: |
           mkdir -p ~/.kube
           aws s3 cp s3://${{ env.KUBE_CONFIG_BUCKET }}/config ~/.kube/config
 
-      # ----------------------------------
+      # ---------------------------
       # Step 3: Validate Helm Release
-      # ----------------------------------
+      # ---------------------------
       - name: Validate Helm Release
         run: |
           helm list -n ${{ env.NAMESPACE }} | grep ${{ env.HELM_RELEASE_NAME }}
 
-      # ----------------------------------
+      # -------------------------
       # Step 4: Validate Pod Status
-      # ----------------------------------
+      # -------------------------
       - name: Validate Pod Status
         run: |
           kubectl get pods -n ${{ env.NAMESPACE }} -l app.kubernetes.io/instance=${{ env.HELM_RELEASE_NAME }} | grep Running
 
-      # ----------------------------------
+      # ---------------------------
       # Step 5: Rotate DB Passwords
-      # ----------------------------------
+      # ---------------------------
       - name: Rotate Database Roles Passwords
         run: |
           # Get the Pod Name
@@ -405,9 +419,9 @@ jobs:
           exec_sql "ALTER ROLE csb_aws_user WITH PASSWORD '${{ secrets.CSB_AWS_USER_PSWD }}';"
           exec_sql "ALTER ROLE csb_azure_user WITH PASSWORD '${{ secrets.CSB_AZURE_USER_PSWD }}';"
 
-      # ----------------------------------
+      # -----------------------------
       # Step 6: Upload to AWS Secrets
-      # ----------------------------------
+      # -----------------------------
       - name: Upload Passwords to AWS Secrets Manager
         run: |
           # Helper function to create or update secret

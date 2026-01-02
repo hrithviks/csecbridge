@@ -1,7 +1,19 @@
-# -----------------------------------------------------------------------------
-# Script  : .github/workflows/csec-k8s-app-platform.yaml
-# Purpose : Workflow to build and deploy the Kubernetes platform for cSecBridge
-# -----------------------------------------------------------------------------
+# -------------------------------------------------------------------------------
+# Workflow : .github/workflows/csec-k8s-app-platform.yaml
+# Purpose  : Workflow to build and deploy the Kubernetes platform for cSecBridge
+#
+# Summary  :
+#   1. Validation
+#      - Code Checkout, Kubeconform (Lint), Trivy (SAST)
+#   2. Deploy to DEV
+#      - Code Checkout, Configure AWS, Apply Platform, Upload Config, Rollback
+#   3. Verify DEV
+#      - Code Checkout, Configure AWS, Retrieve Kubeconfig, Validate Resources
+#   4. Deploy to QA
+#      - Code Checkout, Configure AWS, Apply Platform, Upload Config, Rollback
+#   5. Verify QA
+#      - Code Checkout, Configure AWS, Retrieve Kubeconfig, Validate Resources
+# -------------------------------------------------------------------------------
 name: C-Sec | Deployment | Kubernetes Application Platform
 on: workflow_dispatch
 
@@ -23,6 +35,8 @@ jobs:
   # ----------------------------------
   # This job performs static code analysis on Kubernetes manifests
   # to ensure syntactic validity and security compliance.
+  # Security scanning and schema validation are integrated early in the pipeline
+  # to identify misconfigurations and vulnerabilities before deployment.
   validate:
     name: Platform Validation
     runs-on: csec-self-hosted
@@ -35,22 +49,22 @@ jobs:
         password: ${{ secrets.GH_TOKEN }}
 
     steps:
-      # ----------------------
+      # ---------------------
       # Step 1: Code Checkout
-      # ----------------------
+      # ---------------------
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      # ---------------------------
+      # -----------------------
       # Step 2: Run Kubeconform
-      # ---------------------------
+      # -----------------------
       # Validates the Kubernetes YAML files against the official schemas.
       - name: Run Kubeconform (Lint)
         run: kubeconform -summary -ignore-missing-schemas -ignore-filename-pattern 'kustomization.yaml' k8s-platform-config/
 
-      # ---------------------------
+      # -------------------------
       # Step 3: Run Trivy Scanner
-      # ---------------------------
+      # -------------------------
       # Scans the configuration files for security vulnerabilities
       # and misconfigurations.
       - name: Run Trivy (SAST)
@@ -65,6 +79,8 @@ jobs:
   # -----------------------------
   # This job deploys the platform configuration to the Development
   # Kubernetes cluster and generates access credentials for applications.
+  # Kustomize is utilized to manage environment-specific configurations (overlays),
+  # ensuring a consistent base while allowing for isolated environment adjustments.
   deploy-dev:
     name: Deploy Platform (DEV)
     needs: [validate]
@@ -81,15 +97,17 @@ jobs:
         password: ${{ secrets.GH_TOKEN }}
 
     steps:
-      # ----------------------
+      # ---------------------
       # Step 1: Code Checkout
-      # ----------------------
+      # ---------------------
       - name: Checkout Code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
 
-      # ----------------------------------
+      # ---------------------------------
       # Step 2: Configure AWS Credentials
-      # ----------------------------------
+      # ---------------------------------
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -97,18 +115,19 @@ jobs:
           role-to-assume: "arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/${{ secrets.AWS_OIDC_ROLE }}"
           role-skip-session-tagging: true
 
-      # -----------------------------------
+      # ----------------------------------
       # Step 3: Apply Platform Configuration
-      # -----------------------------------
+      # ----------------------------------
       - name: Apply Platform Configuration
+        id: apply-platform
         uses: ./.github/actions/k8s-platform/apply
         with:
           kube_config_bucket: ${{ secrets.AWS_S3_KUBE_CONFIG }}
           cluster_env: ${{ env.CLUSTER_ENV }}
 
-      # -----------------------------------
+      # ------------------------------------
       # Step 4: Generate and Upload App Config
-      # -----------------------------------
+      # ------------------------------------
       - name: Generate and Upload App Config
         uses: ./.github/actions/k8s-platform/config-upload
         with:
@@ -117,11 +136,30 @@ jobs:
           cluster_env: ${{ env.CLUSTER_ENV }}
           kube_config_bucket: ${{ secrets.AWS_S3_KUBE_CONFIG }}
 
-  # ------------------------------
+      # ------------------
+      # Automated Rollback
+      # ------------------
+      # Kubernetes manifests allow for safer rollbacks by
+      # reapplying the previous configuration. If deployment fails, the
+      # pipeline reverts to the previous commit to restore the platform state.
+      - name: Checkout Previous Commit (Rollback)
+        if: failure() && steps.apply-platform.outcome == 'failure'
+        run: git checkout HEAD^
+
+      - name: Rollback Platform Configuration
+        if: failure() && steps.apply-platform.outcome == 'failure'
+        uses: ./.github/actions/k8s-platform/apply
+        with:
+          kube_config_bucket: ${{ secrets.AWS_S3_KUBE_CONFIG }}
+          cluster_env: ${{ env.CLUSTER_ENV }}
+
+  # ----------------------------
   # JOB 3: Verify Platform (DEV)
-  # ------------------------------
+  # ----------------------------
   # This job performs post-deployment validation to ensure
   # platform resources exist in the Development cluster.
+  # Validation checks are executed immediately post-deployment to confirm
+  # resource availability and health, ensuring the cluster state matches intent.
   verify-dev:
     name: Verify Platform (DEV)
     needs: [deploy-dev]
@@ -138,15 +176,17 @@ jobs:
         password: ${{ secrets.GH_TOKEN }}
 
     steps:
-      # ----------------------
+      # ---------------------
       # Step 1: Code Checkout
-      # ----------------------
+      # ---------------------
       - name: Checkout Code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
 
-      # ----------------------------------
+      # ---------------------------------
       # Step 2: Configure AWS Credentials
-      # ----------------------------------
+      # ---------------------------------
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -154,18 +194,18 @@ jobs:
           role-to-assume: "arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/${{ secrets.AWS_OIDC_ROLE }}"
           role-skip-session-tagging: true
 
-      # -----------------------------------
+      # ---------------------------
       # Step 3: Retrieve Kubeconfig
-      # -----------------------------------
+      # ---------------------------
       - name: Retrieve Kubeconfig
         run: |
           mkdir -p ~/.kube
           aws s3 cp s3://${{ secrets.AWS_S3_KUBE_CONFIG }}/kube-admin.conf ~/.kube/config
           chmod 600 ~/.kube/config
 
-      # -----------------------------------
+      # ---------------------------------
       # Step 4: Validate Platform Resources
-      # -----------------------------------
+      # ---------------------------------
       - name: Validate Platform Resources
         uses: ./.github/actions/k8s-platform/validate
         with:
@@ -179,6 +219,8 @@ jobs:
   # ----------------------------
   # This job deploys the platform configuration to the QA
   # Kubernetes cluster and generates access credentials for applications.
+  # The same Kustomize overlay strategy is applied to the QA environment to
+  # maintain configuration consistency across deployment stages.
   deploy-qa:
     name: Deploy Platform (QA)
     if: false
@@ -196,15 +238,17 @@ jobs:
         password: ${{ secrets.GH_TOKEN }}
 
     steps:
-      # ----------------------
+      # ---------------------
       # Step 1: Code Checkout
-      # ----------------------
+      # ---------------------
       - name: Checkout Code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
 
-      # ----------------------------------
+      # ---------------------------------
       # Step 2: Configure AWS Credentials
-      # ----------------------------------
+      # ---------------------------------
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -216,14 +260,15 @@ jobs:
       # Step 3: Apply Platform Configuration
       # ------------------------------------
       - name: Apply Platform Configuration
+        id: apply-platform
         uses: ./.github/actions/k8s-platform/apply
         with:
           kube_config_bucket: ${{ secrets.AWS_S3_KUBE_CONFIG }}
           cluster_env: ${{ env.CLUSTER_ENV }}
 
-      # -----------------------------------
+      # --------------------------------------
       # Step 4: Generate and Upload App Config
-      # -----------------------------------
+      # --------------------------------------
       - name: Generate and Upload App Config
         uses: ./.github/actions/k8s-platform/config-upload
         with:
@@ -232,11 +277,26 @@ jobs:
           cluster_env: ${{ env.CLUSTER_ENV }}
           kube_config_bucket: ${{ secrets.AWS_S3_KUBE_CONFIG }}
 
-  # ------------------------------
+      # The automated rollback strategy is enforced to ensure consistency
+      # and rapid recovery from deployment failures in the QA environment.
+      - name: Checkout Previous Commit (Rollback)
+        if: failure() && steps.apply-platform.outcome == 'failure'
+        run: git checkout HEAD^
+
+      - name: Rollback Platform Configuration
+        if: failure() && steps.apply-platform.outcome == 'failure'
+        uses: ./.github/actions/k8s-platform/apply
+        with:
+          kube_config_bucket: ${{ secrets.AWS_S3_KUBE_CONFIG }}
+          cluster_env: ${{ env.CLUSTER_ENV }}
+
+  # ---------------------------
   # JOB 5: Verify Platform (QA)
-  # ------------------------------
+  # ---------------------------
   # This job performs post-deployment validation to ensure
   # platform resources exist in the QA cluster.
+  # Validation checks are executed immediately post-deployment to confirm
+  # resource availability and health, ensuring the cluster state matches intent.
   verify-qa:
     name: Verify Platform (QA)
     if: false
@@ -254,15 +314,15 @@ jobs:
         password: ${{ secrets.GH_TOKEN }}
 
     steps:
-      # ----------------------
+      # ---------------------
       # Step 1: Code Checkout
-      # ----------------------
+      # ---------------------
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      # ----------------------------------
+      # ---------------------------------
       # Step 2: Configure AWS Credentials
-      # ----------------------------------
+      # ---------------------------------
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -270,9 +330,9 @@ jobs:
           role-to-assume: "arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/${{ secrets.AWS_OIDC_ROLE }}"
           role-skip-session-tagging: true
 
-      # -----------------------------------
+      # ---------------------------
       # Step 3: Retrieve Kubeconfig
-      # -----------------------------------
+      # ---------------------------
       - name: Retrieve Kubeconfig
         run: |
           mkdir -p ~/.kube

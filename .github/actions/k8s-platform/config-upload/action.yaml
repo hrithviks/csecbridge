@@ -22,58 +22,28 @@ runs:
   using: "composite"
   steps:
     # ---------------------------------------------
-    # Step 1: Retrieve Cluster Information
+    # Step 1: Install Dependencies
     # ---------------------------------------------
-    - name: Retrieve Cluster Info
+    - name: Install Python Dependencies
+      shell: bash
+      run: pip install pyyaml
+
+    # ---------------------------------------------
+    # Step 2: Generate Kubeconfig
+    # ---------------------------------------------
+    - name: Generate Kubeconfig
       shell: bash
       run: |
-        echo "Retrieving cluster information..."
-        SERVER=$(kubectl config view --minify --raw -o jsonpath='{.clusters[0].cluster.server}')
-        CA_DATA=$(kubectl config view --minify --raw -o jsonpath='{.clusters[0].cluster.certificate-authority-data}')
-
-        echo "SERVER=$SERVER" >> $GITHUB_ENV
-        echo "CA_DATA=$CA_DATA" >> $GITHUB_ENV
+        python ${{ github.action_path }}/_get_kube_config.py \
+          --service-account-name ${{ inputs.sa_name }} \
+          --namespace ${{ inputs.namespace }} \
+          --token-ttl 8760h
 
     # ---------------------------------------------
-    # Step 2: Generate Service Account Token
-    # ---------------------------------------------
-    - name: Generate Service Account Token
-      shell: bash
-      run: |
-        echo "Generating token for ${{ inputs.sa_name }}..."
-        TOKEN=$(kubectl create token ${{ inputs.sa_name }} -n ${{ inputs.namespace }} --duration=8760h)
-        echo "TOKEN=$TOKEN" >> $GITHUB_ENV
-
-    # ---------------------------------------------
-    # Step 3: Process Template
-    # ---------------------------------------------
-    - name: Generate Kubeconfig File
-      shell: bash
-      run: |
-        echo "Processing template..."
-        CLUSTER_NAME="csec-${{ inputs.cluster_env }}"
-        USER_NAME="${{ inputs.sa_name }}"
-        CONTEXT_NAME="${CLUSTER_NAME}"
-        NAMESPACE="${{ inputs.namespace }}"
-
-        # Use sed to replace placeholders and write to generated-config.yaml
-        sed -e "s|name_placeholder|$CLUSTER_NAME|g" \
-            -e "s|ca_data_placeholder|$CA_DATA|g" \
-            -e "s|server_placeholder|$SERVER|g" \
-            -e "s|user_name_placeholder|$USER_NAME|g" \
-            -e "s|user_token_placeholder|$TOKEN|g" \
-            -e "s|context_name_placeholder|$CONTEXT_NAME|g" \
-            -e "s|context_cluster_placeholder|$CLUSTER_NAME|g" \
-            -e "s|context_ns_placeholder|$NAMESPACE|g" \
-            -e "s|context_user_placeholder|$USER_NAME|g" \
-            -e "s|current_context_placeholder|$CONTEXT_NAME|g" \
-            k8s-templates/app-kubeconfig-template.yaml > generated-config.yaml
-
-    # ---------------------------------------------
-    # Step 4: Upload to S3
+    # Step 3: Upload to S3
     # ---------------------------------------------
     - name: Upload to S3
       shell: bash
       run: |
         echo "Uploading config to s3://${{ inputs.kube_config_bucket }}/config"
-        aws s3 cp generated-config.yaml s3://${{ inputs.kube_config_bucket }}/config
+        aws s3 cp ${{ inputs.sa_name }}-config.yaml s3://${{ inputs.kube_config_bucket }}/config

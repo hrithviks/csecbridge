@@ -1,7 +1,11 @@
-# -----------------------------------------------------------------------------
-# Script  : .github/workflows/csec-devops.yaml
-# Purpose : Workflow to validate the DevOps environment and repository health
-# -----------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Workflow : .github/workflows/csec-devops.yaml
+# Purpose  : Workflow to validate the DevOps environment and repository health
+#
+# Summary  :
+#   1. Validate Environment
+#      - Code Checkout, Verify Tools (AWS, TF, Helm, Kubectl), Trivy Scan
+# ---------------------------------------------------------------------------
 name: C-Sec | DevOps | General Validation
 on: workflow_dispatch
 
@@ -9,11 +13,11 @@ permissions:
   contents: read
 
 jobs:
-  # ----------------------------------
+  # ------------------------------
   # JOB 1: Environment & Code Scan
-  # ----------------------------------
-  # This job verifies the runtime environment on GitHub-hosted runners
-  # using the custom image, and performs a general security scan.
+  # ------------------------------
+  # The runtime environment is verified on GitHub-hosted runners using the
+  # custom image, and a general security scan is performed to ensure integrity.
   validate-env:
     name: Validate Environment
     runs-on: ubuntu-latest
@@ -25,15 +29,15 @@ jobs:
         password: ${{ secrets.GH_TOKEN }}
 
     steps:
-      # ----------------------
+      # ---------------------
       # Step 1: Code Checkout
-      # ----------------------
+      # ---------------------
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      # ----------------------
+      # --------------------
       # Step 2: Verify Tools
-      # ----------------------
+      # --------------------
       - name: Verify DevOps Tools
         run: |
           echo "--- AWS CLI ---"

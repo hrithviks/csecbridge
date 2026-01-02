@@ -1,6 +1,16 @@
 # -----------------------------------------------------------------------------
-# Script  : .github/workflows/csec-k8s-infra-deployment.yaml
-# Purpose : Workflow to build and deploy Terraform configuration for K8s infra.
+# Workflow : .github/workflows/csec-k8s-cluster.yaml
+# Purpose  : Workflow to build and deploy Terraform configuration for K8s infra.
+#
+# Summary  :
+#   1. Validation
+#      - Code Checkout, Cache Providers, Format Check, Init (Backendless), Validate
+#   2. SAST
+#      - Code Checkout, TFLint, Trivy Scan, tfsec Scan
+#   3. Deploy to DEV
+#      - Code Checkout, Cache Providers, Configure AWS, Terraform Apply
+#   4. Deploy to QA
+#      - Code Checkout, Cache Providers, Configure AWS, Terraform Apply
 # -----------------------------------------------------------------------------
 name: C-Sec | Deployment | Kubernetes Infrastructure
 
@@ -27,6 +37,8 @@ jobs:
   # -----------------------------------------------------
   # This job performs static code analysis to ensure the Terraform code
   # adheres to formatting standards and is syntactically valid.
+  # Initialization is performed without a backend to validate syntax and
+  # formatting without requiring access to the remote state or cloud credentials.
   validate:
     name: Terraform Validation
     runs-on: csec-self-hosted
@@ -39,9 +51,9 @@ jobs:
         password: ${{ secrets.GH_TOKEN }}
 
     steps:
-      # ----------------------
+      # ---------------------
       # Step 1: Code Checkout
-      # ----------------------
+      # ---------------------
       - name: Checkout Code
         uses: actions/checkout@v4
 
@@ -60,9 +72,9 @@ jobs:
         run: terraform fmt -check -recursive
         working-directory: ${{ env.TF_WORKING_DIR }}
 
-      # --------------------------------
+      # ------------------------------
       # Step 4: Initialize (Backendless)
-      # --------------------------------
+      # ------------------------------
       - name: Terraform Init (Backendless)
         run: terraform init -backend=false
         working-directory: ${{ env.TF_WORKING_DIR }}
@@ -79,6 +91,8 @@ jobs:
   # -------------------------------------------------
   # This job runs security scans using TFLint, Trivy, and tfsec to identify
   # potential vulnerabilities and misconfigurations in the infrastructure code.
+  # Security scanning is integrated early in the pipeline (Shift-Left) to
+  # identify and mitigate vulnerabilities before infrastructure is provisioned.
   sast:
     name: Infrastructure SAST
     runs-on: csec-self-hosted
@@ -109,9 +123,9 @@ jobs:
           tflint
         working-directory: ${{ env.TF_WORKING_DIR }}
 
-      # -------------------------------
+      # -----------------------------
       # Step 3: Run Trivy Security Scan
-      # -------------------------------
+      # -----------------------------
       # Scans the Terraform configuration for security vulnerabilities and
       # misconfigurations. This step enforces security gates by failing
       # on CRITICAL or HIGH severity findings.
@@ -119,9 +133,9 @@ jobs:
         run: trivy config . --severity CRITICAL,HIGH --exit-code 0
         working-directory: ${{ env.TF_WORKING_DIR }}
 
-      # -------------------------------
+      # -----------------------------
       # Step 4: Run tfsec Security Scan
-      # -------------------------------
+      # -----------------------------
       # Conducts static analysis to identify potential security risks and
       # compliance violations (e.g., open security groups, unencrypted resources)
       # adhering to industry best practices.
@@ -129,9 +143,12 @@ jobs:
         run: tfsec .
         working-directory: ${{ env.TF_WORKING_DIR }}
 
-  # --------------------------------
+  # ------------------------------
   # JOB 3: Deployment to DEV Cluster
-  # --------------------------------
+  # ------------------------------
+  # Terraform rollbacks are not encouraged due to the risk of state corruption
+  # and resource drift. A "Fix-Forward" strategy is adopted where deployment
+  # failures are resolved by pushing a correction commit rather than reverting.
   deploy-dev:
     name: Deploy to DEV Cluster
     needs: [validate, sast]
@@ -160,9 +177,9 @@ jobs:
         with:
           lock_file: k8s-terraform/.terraform.lock.hcl
 
-      # ---------------------------------
+      # -------------------------------
       # Step 3: Configure AWS Credentials
-      # ---------------------------------
+      # -------------------------------
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -170,9 +187,9 @@ jobs:
           role-to-assume: "arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/${{ secrets.AWS_OIDC_ROLE }}"
           role-skip-session-tagging: true
 
-      # --------------------------------
+      # ------------------------------
       # Step 4: Terraform Build & Deploy
-      # --------------------------------
+      # ------------------------------
       - name: Terraform Build & Deploy
         uses: ./.github/actions/k8s-cluster/terraform
         with:
@@ -180,18 +197,16 @@ jobs:
           backend_config_key: k8s-cluster/csec-dev.tfstate
           working_directory: ${{ env.TF_WORKING_DIR }}
 
-  # -------------------------------
+  # -----------------------------
   # JOB 4: Deployment to QA Cluster
-  # -------------------------------
+  # -----------------------------
+  # Same strategy applies to QA: No automated rollbacks; fix forward on failure.
   deploy-qa:
     if: false # Disabled for now
     name: Deploy to QA Cluster
     needs: [validate, sast]
     runs-on: csec-self-hosted
     environment: infra-qa
-
-    env:
-      GH_USER: ${{ secrets.GH_USER }}
 
     # Use the custom runner image
     container:
